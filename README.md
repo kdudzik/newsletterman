@@ -20,6 +20,7 @@ A personal newsletter reader that surfaces Gmail messages tagged **Read later**,
 - **Author aliases** — long sender names (e.g. "James Stanier from The Engineering Manager") can be mapped to short display names in `config.py`.
 - **Subject filter** — set `NEWSLETTER_EXCLUDE_SUBJECT` to drop matching newsletters from the feed without touching Gmail.
 - **Hot-reload** — the dev server watches `*.css`, `*.html`, and `*.js` for changes.
+- **Personal relevance scoring** — if a `personal_context.md` file is present (describing your values, worldview, and priorities), each newsletter is scored 0–10 on **relevance** (alignment with your interests) and **challenge** (how much it tensions your worldview). Scores appear as instant-tooltip badges on cards. The sort group gains **Most relevant** and **Most challenging** options.
 
 ## Setup
 
@@ -45,6 +46,7 @@ cp .env.example .env   # fill in your credentials (see below)
 |---|---|
 | `GMAIL_READ_LATER_LABEL` | Gmail label to watch (default: `Read later`) |
 | `NEWSLETTER_EXCLUDE_SUBJECT` | Drop newsletters whose subject contains this string |
+| `PERSONAL_CONTEXT_FILE` | Path to a markdown file describing your values and worldview for relevance scoring (default: `personal_context.md` if it exists) |
 
 To regenerate `GOOGLE_REFRESH_TOKEN`, run the one-shot script in the project history that uses `InstalledAppFlow.run_local_server`.
 
@@ -83,7 +85,9 @@ launchctl unload ~/Library/LaunchAgents/com.newsletterman.plist \
 | `main.py` | FastAPI app — routes, lifespan, template filters, markdown rendering |
 | `gmail_client.py` | Gmail API calls, local JSON cache, label management |
 | `summarizer.py` | OpenAI summarization wrapper with language detection |
+| `scorer.py` | GPT-4o-mini scoring against personal context (relevance + challenge) |
 | `config.py` | Author alias overrides |
+| `personal_context.md` | Your values, worldview, and priorities for scoring (gitignored — create your own) |
 | `templates/` | Jinja2 HTML templates |
 | `static/` | CSS / JS assets |
 | `com.newsletterman.plist` | launchd agent descriptor |
