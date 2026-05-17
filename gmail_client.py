@@ -126,9 +126,10 @@ def sync_newsletters(service) -> list[dict]:
                 try:
                     entry = json.loads(f.read_text())
                     if not entry.get("read"):
-                        f.unlink()
+                        entry["read"] = True
+                        f.write_text(json.dumps(entry, indent=2))
                 except Exception:
-                    f.unlink()
+                    f.unlink(missing_ok=True)
 
     newsletters = []
     for msg in result.get("messages", []):

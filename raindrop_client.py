@@ -208,9 +208,10 @@ def sync_articles(token: str) -> list[dict]:
                 try:
                     entry = json.loads(f.read_text())
                     if not entry.get("read"):
-                        f.unlink()
+                        entry["read"] = True
+                        f.write_text(json.dumps(entry, indent=2))
                 except Exception:
-                    f.unlink()
+                    f.unlink(missing_ok=True)
 
     articles = []
     for item in items:
@@ -246,7 +247,7 @@ def _prefetch_word_counts(article_ids: list[str]) -> None:
         try:
             get_article_body(article_id)
         except Exception as e:
-            print(f"[raindrop] prefetch failed for {article_id}: {e}")
+            print(f"[{datetime.now(timezone.utc).strftime("%H:%M:%S")}] [raindrop] prefetch failed for {article_id}: {e}")
 
 
 def get_article_body(article_id: str) -> str:
@@ -284,7 +285,7 @@ def get_article_body(article_id: str) -> str:
         resp.raise_for_status()
         body = _extract_text(resp.text, url=url)
     except Exception as e:
-        print(f"[raindrop] fetch failed for {url}: {e}")
+        print(f"[{datetime.now(timezone.utc).strftime("%H:%M:%S")}] [raindrop] fetch failed for {url}: {e}")
         body = cached.get("snippet", "")
 
     cached["body"] = body
@@ -327,7 +328,7 @@ def move_to_archive(article_id: str, token: str) -> bool:
             timeout=10,
         ).raise_for_status()
     except Exception as e:
-        print(f"[raindrop] move_to_archive error: {e}")
+        print(f"[{datetime.now(timezone.utc).strftime("%H:%M:%S")}] [raindrop] move_to_archive error: {e}")
         return False
     cached["read"] = True
     _save_entry(article_id, cached)

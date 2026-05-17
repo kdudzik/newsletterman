@@ -241,9 +241,10 @@ def sync_articles(schowek_url: str, cookie_file: str = "") -> list[dict]:
                 try:
                     entry = json.loads(f.read_text())
                     if not entry.get("read"):
-                        f.unlink()
+                        entry["read"] = True
+                        f.write_text(json.dumps(entry, indent=2))
                 except Exception:
-                    f.unlink()
+                    f.unlink(missing_ok=True)
 
     now_dt = datetime.now(timezone.utc)
     today = now_dt.date().isoformat()
@@ -301,7 +302,7 @@ def get_article_body(article_id: str, cookie_file: str = "") -> str:
         html = resp.text
         body = _extract_text(html, url=url)
     except Exception as e:
-        print(f"[wyborcza] fetch failed for {url}: {e}")
+        print(f"[{datetime.now(timezone.utc).strftime("%H:%M:%S")}] [wyborcza] fetch failed for {url}: {e}")
         body = cached.get("snippet", "")
 
     cached["body"] = body

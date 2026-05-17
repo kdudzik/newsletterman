@@ -68,17 +68,18 @@ Return ONLY valid JSON in this exact shape, no other text:
 """
 
 
-def score_political_lean(summary: str) -> dict:
+def score_political_lean(summary: str, language: str = "") -> dict:
     """Returns {lean, lean_note} or {} on failure."""
     if not summary:
         return {}
     try:
         client = _get_client()
+        lang_note = f" Write lean_note in {language.upper()} language." if language and not language.lower().startswith("en") else ""
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             max_tokens=100,
             messages=[
-                {"role": "system", "content": _LEAN_PROMPT},
+                {"role": "system", "content": _LEAN_PROMPT + lang_note},
                 {"role": "user", "content": f"<SUMMARY>\n{summary}\n</SUMMARY>"},
             ],
         )

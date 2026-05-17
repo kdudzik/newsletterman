@@ -17,6 +17,7 @@ from fastapi.templating import Jinja2Templates
 from gmail_client import get_service, list_newsletters_cached, sync_newsletters, get_newsletter_body, remove_read_later_label, restore_read_later_label, _load_entry, _save_entry
 import raindrop_client as _raindrop
 import wyborcza_client as _wyborcza
+import youtube_client as _youtube
 from summarizer import summarize
 import scorer as _scorer
 try:
@@ -25,6 +26,11 @@ except ImportError:
     AUTHOR_ALIASES: dict[str, str] = {}
     PERSONAL_CONTEXT_FILE: str = ""
 
+def _log(msg: str) -> None:
+    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    print(f"[{ts}] {msg}")
+
+
 def _context_file() -> str:
     """Return path to personal context file if it exists, else empty string."""
     if PERSONAL_CONTEXT_FILE and Path(PERSONAL_CONTEXT_FILE).exists():
@@ -32,6 +38,8 @@ def _context_file() -> str:
     return ""
 
 _gmail_service = None
+_youtube_cookie_file: str = os.getenv("YOUTUBE_COOKIE_FILE", "")
+_youtube_enabled: bool = os.getenv("YOUTUBE_ENABLED", "").lower() in ("1", "true", "yes")
 _raindrop_token: str = os.getenv("RAINDROP_TEST_TOKEN", "")
 _wyborcza_schowek_url: str = os.getenv("WYBORCZA_SCHOWEK_URL", "")
 _wyborcza_cookie_file: str = os.getenv("WYBORCZA_COOKIE_FILE", "")
@@ -74,11 +82,17 @@ def _is_wyborcza(entry_id: str) -> bool:
     return entry_id.startswith("wyborcza-")
 
 
+def _is_youtube(entry_id: str) -> bool:
+    return entry_id.startswith("youtube-")
+
+
 def _load_any(entry_id: str) -> dict:
     if _is_raindrop(entry_id):
         return _raindrop._load_entry(entry_id)
     if _is_wyborcza(entry_id):
         return _wyborcza._load_entry(entry_id)
+    if _is_youtube(entry_id):
+        return _youtube._load_entry(entry_id)
     return _load_entry(entry_id)
 
 
@@ -87,6 +101,8 @@ def _save_any(entry_id: str, data: dict) -> None:
         _raindrop._save_entry(entry_id, data)
     elif _is_wyborcza(entry_id):
         _wyborcza._save_entry(entry_id, data)
+    elif _is_youtube(entry_id):
+        _youtube._save_entry(entry_id, data)
     else:
         _save_entry(entry_id, data)
 
@@ -110,7 +126,7 @@ def _sync_wyborcza() -> list[dict]:
         return items
     except Exception as e:
         _set_wyborcza_status(False, str(e))
-        print(f"[wyborcza] sync failed: {e}")
+        _log(f"[wyborcza] sync failed: {e}")
         return []
 
 
@@ -128,17 +144,18 @@ def _score_entry(entry_id: str) -> None:
             if scores:
                 cached.update(scores)
                 changed = True
-                print(f"[score] rel/ch done: {entry_id}")
+                _log(f"[score] rel/ch done: {entry_id}")
         if cached.get("lean") is None:
-            lean = _scorer.score_political_lean(summary)
+            language = cached.get("transcript_language", "") or cached.get("language", "")
+            lean = _scorer.score_political_lean(summary, language)
             if lean:
                 cached.update(lean)
                 changed = True
-                print(f"[score] lean done: {entry_id} {lean['lean']}")
+                _log(f"[score] lean done: {entry_id} {lean['lean']}")
         if changed:
             _save_any(entry_id, cached)
     except Exception as e:
-        print(f"[score] error {entry_id}: {e}")
+        _log(f"[score] error {entry_id}: {e}")
 
 
 def _summarize_entry(entry_id: str, service) -> None:
@@ -152,6 +169,8 @@ def _summarize_entry(entry_id: str, service) -> None:
             body = _raindrop.get_article_body(entry_id)
         elif _is_wyborcza(entry_id):
             body = _wyborcza.get_article_body(entry_id, _wyborcza_cookie_file)
+        elif _is_youtube(entry_id):
+            body = _youtube.get_article_body(entry_id)
         else:
             data = get_newsletter_body(entry_id, service)
             body = data.get("body", "")
@@ -159,13 +178,16 @@ def _summarize_entry(entry_id: str, service) -> None:
             return
         cached = _load_any(entry_id)
         subject = cached.get("subject", "")
-        summary = summarize(body, subject, is_article=_is_raindrop(entry_id) or _is_wyborcza(entry_id))
+        is_video = _is_youtube(entry_id)
+        is_article = _is_raindrop(entry_id) or _is_wyborcza(entry_id)
+        language = cached.get("transcript_language", "") if is_video else ""
+        summary = summarize(body, subject, is_article=is_article, is_video=is_video, language=language)
         cached["summary"] = summary
         _save_any(entry_id, cached)
-        print(f"[summarize] done: {entry_id}")
+        _log(f"[summarize] done: {entry_id}")
         _score_entry(entry_id)
     except Exception as e:
-        print(f"[summarize] error {entry_id}: {e}")
+        _log(f"[summarize] error {entry_id}: {e}")
 
 
 def _all_cache_files():
@@ -175,6 +197,7 @@ def _all_cache_files():
         Path(__file__).parent / ".newsletter_cache",
         Path(__file__).parent / ".raindrop_cache",
         Path(__file__).parent / ".wyborcza_cache",
+        Path(__file__).parent / ".youtube_cache",
     ):
         if not cache_dir.exists():
             continue
@@ -187,12 +210,13 @@ async def _ensure_summaries() -> None:
     import json as _json
     # Build a dedicated service so background threads don't share httplib2
     # connections with the main event loop (httplib2 is not thread-safe).
-    try:
-        bg_service = get_service()
-    except Exception as e:
-        print(f"[summarize] could not build service: {e}")
-        return
     loop = asyncio.get_event_loop()
+    try:
+        bg_service = await loop.run_in_executor(None, get_service)
+    except Exception as e:
+        _log(f"[summarize] could not build service: {e}")
+        return
+    _log("[summarize] starting pass")
     for f, entry_id in _all_cache_files():
         try:
             entry = _json.loads(f.read_text())
@@ -200,6 +224,8 @@ async def _ensure_summaries() -> None:
             continue
         if "subject" in entry and not entry.get("summary"):
             await loop.run_in_executor(None, _summarize_entry, entry_id, bg_service)
+            if _is_youtube(entry_id):
+                await asyncio.sleep(3)
 
 
 async def _ensure_scores() -> None:
@@ -224,10 +250,12 @@ async def _bg_sync():
                 _raindrop.sync_articles(_raindrop_token)
             if _wyborcza_schowek_url:
                 _sync_wyborcza()
-            await _ensure_summaries()
-            await _ensure_scores()
+            if _youtube_enabled and _youtube_cookie_file:
+                _youtube.sync_articles(_youtube_cookie_file)
         except Exception as e:
-            print(f"[bg sync] {e}")
+            _log(f"[bg sync] {e}")
+        await _ensure_summaries()
+        await _ensure_scores()
 
 
 @asynccontextmanager
@@ -238,11 +266,16 @@ async def lifespan(app: FastAPI):
         try:
             _raindrop.sync_articles(_raindrop_token)
         except Exception as e:
-            print(f"[raindrop] startup sync failed: {e}")
+            _log(f"[raindrop] startup sync failed: {e}")
     if _wyborcza_schowek_url:
         _sync_wyborcza()
     else:
         _set_wyborcza_status(False, "")
+    if _youtube_enabled and _youtube_cookie_file:
+        try:
+            _youtube.sync_articles(_youtube_cookie_file)
+        except Exception as e:
+            _log(f"[youtube] startup sync failed: {e}")
     asyncio.create_task(_bg_sync())
     asyncio.create_task(_ensure_summaries())
     asyncio.create_task(_ensure_scores())
@@ -367,6 +400,25 @@ def _read_time(word_count) -> str:
     return f"{minutes} min read"
 
 
+def _duration_minutes(duration: str) -> int:
+    """Convert HH:MM:SS or MM:SS to total minutes as int."""
+    if not duration:
+        return 0
+    parts = duration.split(":")
+    try:
+        if len(parts) == 3:
+            return max(1, int(parts[0]) * 60 + int(parts[1]))
+        return max(1, int(parts[0]))
+    except Exception:
+        return 0
+
+
+def _duration_min(duration: str) -> str:
+    """Convert HH:MM:SS or MM:SS to '42 min'."""
+    m = _duration_minutes(duration)
+    return f"{m} min" if m else duration
+
+
 def _read_time_minutes(word_count) -> int:
     if not word_count or int(word_count) < 100:
         return 0
@@ -379,6 +431,8 @@ templates.env.filters["unescape"] = html.unescape
 templates.env.filters["date_ts"] = _date_ts
 templates.env.filters["markdown_summary"] = _markdown_summary
 templates.env.filters["strip_markdown"] = _strip_markdown
+templates.env.filters["duration_min"] = _duration_min
+templates.env.filters["duration_minutes"] = _duration_minutes
 templates.env.filters["read_time"] = _read_time
 templates.env.filters["read_time_minutes"] = _read_time_minutes
 
@@ -394,8 +448,9 @@ async def index(request: Request):
         articles = []
     if _wyborcza_schowek_url:
         wyborcza_articles = _wyborcza.list_articles_cached()
+    youtube_videos = _youtube.list_articles_cached() if (_youtube_enabled and _youtube_cookie_file) else []
 
-    all_entries = newsletters + articles + wyborcza_articles
+    all_entries = newsletters + articles + wyborcza_articles + youtube_videos
     def _ts(e):
         try:
             return parsedate_to_datetime(e.get("date", "")).timestamp()
@@ -405,12 +460,14 @@ async def index(request: Request):
 
     has_raindrop = bool(_raindrop_token) and any(e.get("source") == "raindrop" for e in all_entries)
     has_wyborcza = bool(_wyborcza_schowek_url) and any(e.get("source") == "wyborcza" for e in all_entries)
+    has_youtube = _youtube_enabled and any(e.get("source") == "youtube" for e in all_entries)
     return templates.TemplateResponse("index.html", {
         "request": request,
         "newsletters": all_entries,
         "has_personal_context": bool(_context_file()),
         "has_raindrop": has_raindrop,
         "has_wyborcza": has_wyborcza,
+        "has_youtube": has_youtube,
         "wyborcza_enabled": _wyborcza_status["enabled"],
         "wyborcza_error": _wyborcza_status["error"],
     })
@@ -424,10 +481,16 @@ async def refresh():
     else:
         articles = []
     wyborcza_articles = _sync_wyborcza() if _wyborcza_schowek_url else []
+    youtube_videos = []
+    if _youtube_enabled and _youtube_cookie_file:
+        try:
+            youtube_videos = _youtube.sync_articles(_youtube_cookie_file)
+        except Exception as e:
+            _log(f"[youtube] refresh sync failed: {e}")
     asyncio.create_task(_ensure_summaries())
     asyncio.create_task(_ensure_scores())
     return {
-        "count": len(newsletters) + len(articles) + len(wyborcza_articles),
+        "count": len(newsletters) + len(articles) + len(wyborcza_articles) + len(youtube_videos),
         "wyborcza_error": _wyborcza_status["error"],
     }
 
@@ -517,6 +580,10 @@ async def article_done(article_id: str):
         except Exception as e:
             _set_wyborcza_status(False, str(e))
             raise HTTPException(status_code=502, detail="Wyborcza Schowek remove failed")
+    elif _is_youtube(article_id):
+        if not _youtube_enabled:
+            raise HTTPException(status_code=503, detail="YouTube not configured")
+        ok = await loop.run_in_executor(None, _youtube.remove_from_watch_later, article_id, _youtube_cookie_file)
     else:
         raise HTTPException(status_code=404, detail="Article not found")
     if not ok:
@@ -543,6 +610,8 @@ async def article_unread(article_id: str):
         except Exception as e:
             _set_wyborcza_status(False, str(e))
             raise HTTPException(status_code=502, detail="Wyborcza Schowek add failed")
+    elif _is_youtube(article_id):
+        ok = _youtube.mark_unread_local(article_id)
     else:
         raise HTTPException(status_code=404, detail="Article not found")
     if not ok:

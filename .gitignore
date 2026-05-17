@@ -6,11 +6,8 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
-.newsletter_cache/
-.raindrop_cache/
-.wyborcza_cache/
-wyborcza-cookies.txt
-*.cookies.txt
+.*_cache/
+*-cookies.txt
 com.newsletterman.plist
 config.py
 personal_context.md
