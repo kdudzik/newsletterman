@@ -16,7 +16,14 @@
         <p class="subtitle" id="subtitle">{{ unread_count }} unread in <em>Read later</em> · <span id="total-time">{{ total_mins // 60 }} h {{ '%02d' | format(total_mins % 60) }} min</span></p>
       </div>
       <div class="header-actions">
-        <button class="sort-btn" id="sort-btn" onclick="toggleSort()">Newest first ↓</button>
+        <div class="sort-group" role="group" aria-label="Sort order">
+          <button class="sort-btn active" data-sort="newest" onclick="setSort('newest')">Newest first</button>
+          <button class="sort-btn" data-sort="oldest" onclick="setSort('oldest')">Oldest first</button>
+          {% if has_personal_context %}
+          <button class="sort-btn" data-sort="relevance" onclick="setSort('relevance')">Most relevant</button>
+          <button class="sort-btn" data-sort="challenge" onclick="setSort('challenge')">Most challenging</button>
+          {% endif %}
+        </div>
         <button class="sort-btn" id="view-toggle-btn" onclick="toggleView()">Show read</button>
         <button id="refresh-btn" class="sort-btn" onclick="doRefresh()">Refresh</button>
       </div>
@@ -58,11 +65,11 @@
     {% else %}
     <ul class="newsletter-list" id="newsletter-list">
       {% for n in newsletters %}
-      <li class="newsletter-item" data-sender="{{ n.from | sender_name }}" data-ts="{{ n.date | date_ts }}" data-read="{{ 'true' if n.read else 'false' }}" data-mins="{{ n.word_count | read_time_minutes }}">
+      <li class="newsletter-item" data-sender="{{ n.from | sender_name }}" data-ts="{{ n.date | date_ts }}" data-read="{{ 'true' if n.read else 'false' }}" data-mins="{{ n.word_count | read_time_minutes }}" data-relevance="{{ n.relevance_score if 'relevance_score' in n else '' }}" data-challenge="{{ n.challenge_score if 'challenge_score' in n else '' }}">
         <div class="card">
           <div class="card-link">
             <a class="subject gmail-link" href="https://mail.google.com/mail/u/0/#all/{{ n.id }}" target="_blank" rel="noopener" title="View in Gmail">{{ n.subject | unescape }}<svg class="ext-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="11" height="11"><path fill-rule="evenodd" d="M4.75 2a.75.75 0 0 0 0 1.5h5.44L2.97 10.72a.75.75 0 1 0 1.06 1.06L11.25 4.56v5.44a.75.75 0 0 0 1.5 0V2.75A.75.75 0 0 0 12 2H4.75Z" clip-rule="evenodd"/></svg></a>
-            <span class="meta">{{ n.from | sender_name }} · {{ n.date | relative_date }}{% if n.word_count %} · <span class="read-time read-time-{{ 'long' if (n.word_count | read_time_minutes) >= 15 else ('medium' if (n.word_count | read_time_minutes) >= 8 else 'short') }}">{{ n.word_count | read_time }}</span>{% endif %}</span>
+            <span class="meta">{{ n.from | sender_name }} · {{ n.date | relative_date }}{% if n.word_count %} · <span class="read-time read-time-{{ 'long' if (n.word_count | read_time_minutes) >= 15 else ('medium' if (n.word_count | read_time_minutes) >= 8 else 'short') }}">{{ n.word_count | read_time }}</span>{% endif %}{% if 'relevance_score' in n %} · <span class="score-badges"><span class="score-badge relevance-{{ 'high' if n.relevance_score >= 7 else ('mid' if n.relevance_score >= 4 else 'low') }}">↑ {{ n.relevance_score }}<span class="score-tip">{{ n.relevance_note }}</span></span><span class="score-badge challenge-{{ 'high' if n.challenge_score >= 7 else ('mid' if n.challenge_score >= 4 else 'low') }}">⚡ {{ n.challenge_score }}<span class="score-tip">{{ n.challenge_note }}</span></span></span>{% endif %}</span>
             {% if n.summary %}<div class="snippet summary-snippet">{{ n.summary | markdown_summary }}</div>{% else %}<span class="snippet">{{ n.snippet | unescape }}</span>{% endif %}
           </div>
           <a class="card-open-panel" href="/newsletter/{{ n.id }}">Open <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path fill-rule="evenodd" d="M8 1a.75.75 0 0 1 .75.75v6.19l1.97-1.97a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.03a.75.75 0 0 1 1.06-1.06l1.97 1.97V1.75A.75.75 0 0 1 8 1ZM1.5 13.25a.75.75 0 0 1 .75-.75h11.5a.75.75 0 0 1 0 1.5H2.25a.75.75 0 0 1-.75-.75Z" clip-rule="evenodd"/></svg></a>
@@ -252,17 +259,24 @@
       });
     });
 
-    let sortDesc = true;
-
-    function toggleSort() {
-      sortDesc = !sortDesc;
-      const btn = document.getElementById('sort-btn');
-      btn.textContent = sortDesc ? 'Newest first ↓' : 'Oldest first ↑';
+    function setSort(mode) {
+      document.querySelectorAll('.sort-group .sort-btn').forEach(b => b.classList.toggle('active', b.dataset.sort === mode));
       const list = document.getElementById('newsletter-list');
       const items = Array.from(list.querySelectorAll('.newsletter-item'));
-      items.sort((a, b) => sortDesc
-        ? Number(b.dataset.ts) - Number(a.dataset.ts)
-        : Number(a.dataset.ts) - Number(b.dataset.ts));
+      items.sort((a, b) => {
+        if (mode === 'oldest') return Number(a.dataset.ts) - Number(b.dataset.ts);
+        if (mode === 'relevance') {
+          const ra = a.dataset.relevance !== '' ? Number(a.dataset.relevance) : -1;
+          const rb = b.dataset.relevance !== '' ? Number(b.dataset.relevance) : -1;
+          return rb !== ra ? rb - ra : Number(b.dataset.ts) - Number(a.dataset.ts);
+        }
+        if (mode === 'challenge') {
+          const ca = a.dataset.challenge !== '' ? Number(a.dataset.challenge) : -1;
+          const cb = b.dataset.challenge !== '' ? Number(b.dataset.challenge) : -1;
+          return cb !== ca ? cb - ca : Number(b.dataset.ts) - Number(a.dataset.ts);
+        }
+        return Number(b.dataset.ts) - Number(a.dataset.ts); // newest
+      });
       items.forEach(item => list.appendChild(item));
     }
   </script>

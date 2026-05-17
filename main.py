@@ -16,12 +16,41 @@ from fastapi.templating import Jinja2Templates
 
 from gmail_client import get_service, list_newsletters_cached, sync_newsletters, get_newsletter_body, remove_read_later_label, restore_read_later_label, _load_entry, _save_entry
 from summarizer import summarize
+import scorer as _scorer
 try:
-    from config import AUTHOR_ALIASES
+    from config import AUTHOR_ALIASES, PERSONAL_CONTEXT_FILE
 except ImportError:
     AUTHOR_ALIASES: dict[str, str] = {}
+    PERSONAL_CONTEXT_FILE: str = ""
+
+def _context_file() -> str:
+    """Return path to personal context file if it exists, else empty string."""
+    if PERSONAL_CONTEXT_FILE and Path(PERSONAL_CONTEXT_FILE).exists():
+        return PERSONAL_CONTEXT_FILE
+    return ""
 
 _gmail_service = None
+
+
+def _score_entry(message_id: str) -> None:
+    """Generate relevance/challenge scores for one newsletter. Blocking."""
+    ctx = _context_file()
+    if not ctx:
+        return
+    try:
+        cached = _load_entry(message_id)
+        if cached.get("relevance_score") is not None:
+            return
+        summary = cached.get("summary", "")
+        if not summary:
+            return
+        scores = _scorer.score_newsletter(summary, ctx)
+        if scores:
+            cached.update(scores)
+            _save_entry(message_id, cached)
+            print(f"[score] done: {message_id} rel={scores['relevance']} ch={scores['challenge']}")
+    except Exception as e:
+        print(f"[score] error {message_id}: {e}")
 
 
 def _summarize_entry(message_id: str, service) -> None:
@@ -29,6 +58,7 @@ def _summarize_entry(message_id: str, service) -> None:
     try:
         cached = _load_entry(message_id)
         if cached.get("summary"):
+            _score_entry(message_id)
             return
         data = get_newsletter_body(message_id, service)
         body = data.get("body", "")
@@ -39,6 +69,7 @@ def _summarize_entry(message_id: str, service) -> None:
         cached["summary"] = summary
         _save_entry(message_id, cached)
         print(f"[summarize] done: {message_id}")
+        _score_entry(message_id)
     except Exception as e:
         print(f"[summarize] error {message_id}: {e}")
 
@@ -66,12 +97,31 @@ async def _ensure_summaries() -> None:
             await loop.run_in_executor(None, _summarize_entry, f.stem, bg_service)
 
 
+async def _ensure_scores() -> None:
+    """Background task: score all cached newsletters that have a summary but no scores yet."""
+    import json as _json
+    if not _context_file():
+        return
+    cache_dir = Path(__file__).parent / ".newsletter_cache"
+    if not cache_dir.exists():
+        return
+    loop = asyncio.get_event_loop()
+    for f in sorted(cache_dir.glob("*.json")):
+        try:
+            entry = _json.loads(f.read_text())
+        except Exception:
+            continue
+        if entry.get("summary") and entry.get("relevance_score") is None:
+            await loop.run_in_executor(None, _score_entry, f.stem)
+
+
 async def _bg_sync():
     while True:
         await asyncio.sleep(60)
         try:
             sync_newsletters(_gmail_service)
             await _ensure_summaries()
+            await _ensure_scores()
         except Exception as e:
             print(f"[bg sync] {e}")
 
@@ -82,6 +132,7 @@ async def lifespan(app: FastAPI):
     _gmail_service = get_service()
     asyncio.create_task(_bg_sync())
     asyncio.create_task(_ensure_summaries())
+    asyncio.create_task(_ensure_scores())
     yield
 
 
@@ -219,13 +270,18 @@ templates.env.filters["read_time_minutes"] = _read_time_minutes
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     newsletters = list_newsletters_cached()
-    return templates.TemplateResponse("index.html", {"request": request, "newsletters": newsletters})
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "newsletters": newsletters,
+        "has_personal_context": bool(_context_file()),
+    })
 
 
 @app.post("/refresh")
 async def refresh():
     newsletters = sync_newsletters(_gmail_service)
     asyncio.create_task(_ensure_summaries())
+    asyncio.create_task(_ensure_scores())
     return {"count": len(newsletters)}
 
 
@@ -249,6 +305,8 @@ async def api_summarize(message_id: str):
     cached = _load_entry(message_id)
     cached["summary"] = summary
     _save_entry(message_id, cached)
+    loop = asyncio.get_event_loop()
+    asyncio.create_task(loop.run_in_executor(None, _score_entry, message_id))
     return {"summary": summary, "summary_html": str(_markdown_summary(summary))}
 
 

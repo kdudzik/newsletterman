@@ -9,3 +9,4 @@ __pycache__/
 .newsletter_cache/
 com.newsletterman.plist
 config.py
+personal_context.md

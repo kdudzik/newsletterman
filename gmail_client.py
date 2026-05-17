@@ -99,7 +99,7 @@ def list_newsletters_cached() -> list[dict]:
                 if "body" in entry and "word_count" not in entry:
                     entry["word_count"] = len(entry["body"].split())
                     _save_entry(entry["id"], entry)
-                newsletters.append({k: entry[k] for k in ("id", "subject", "from", "date", "snippet", "summary", "read", "word_count") if k in entry})
+                newsletters.append({k: entry[k] for k in ("id", "subject", "from", "date", "snippet", "summary", "read", "word_count", "relevance_score", "relevance_note", "challenge_score", "challenge_note") if k in entry})
         except Exception:
             pass
     newsletters.sort(key=lambda n: _parse_date(n.get("date", "")), reverse=True)
