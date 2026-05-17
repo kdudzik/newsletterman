@@ -1,0 +1,10 @@
+.venv/
+.env
+token.json
+logs/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.newsletter_cache/
+com.newsletterman.plist
