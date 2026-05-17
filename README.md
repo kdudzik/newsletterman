@@ -1,15 +1,16 @@
 # Newsletter Man
 
-A personal reading hub that surfaces Gmail messages tagged **Read later**, Raindrop.io bookmarks, and optional Wyborcza.pl Schowek articles, summarizes them with GPT-4o-mini, and serves them via a local web UI.
+A personal reading hub that surfaces Gmail messages tagged **Read later**, Raindrop.io bookmarks, Wyborcza.pl Schowek articles, and YouTube Watch Later videos, summarizes them with GPT-4o-mini, and serves them via a local web UI.
 
 ## How it works
 
 1. Gmail messages with the **Read later** label are fetched and cached locally (`.newsletter_cache/`).
 2. Raindrop.io bookmarks from your **Unsorted** collection are fetched and cached locally (`.raindrop_cache/`).
 3. Wyborcza.pl Schowek articles can be fetched with an authenticated browser cookie export and cached locally (`.wyborcza_cache/`).
-4. Summaries are generated automatically in the background using `gpt-4o-mini`.
-5. A FastAPI server serves the reader UI at `http://127.0.0.1:7431`.
-6. All configured caches sync every 60 seconds while the server is running.
+4. YouTube Watch Later videos are fetched via browser cookies (Innertube API) and cached locally (`.youtube_cache/`). Transcripts are fetched automatically; video descriptions are used as a fallback.
+5. Summaries are generated automatically in the background using `gpt-4o-mini`.
+6. A FastAPI server serves the reader UI at `http://127.0.0.1:7431`.
+7. All configured caches sync every 60 seconds while the server is running.
 
 ## Features
 
@@ -26,6 +27,7 @@ A personal reading hub that surfaces Gmail messages tagged **Read later**, Raind
 - **Raindrop.io integration** — if `RAINDROP_TEST_TOKEN` is set, articles from your Raindrop **Unsorted** collection appear in the feed alongside newsletters. Marking an article done moves it to an **Archive** collection in Raindrop.
 - **Wyborcza.pl Schowek integration** — if `WYBORCZA_SCHOWEK_URL` and a valid authenticated cookie export are set, saved Wyborcza articles appear in the feed alongside newsletters and Raindrop articles.
 - **Wyborcza auth warning** — if Schowek auth expires or breaks, the home page shows a visible warning instead of failing silently.
+- **YouTube Watch Later integration** — if `YOUTUBE_ENABLED=true` and `YOUTUBE_COOKIE_FILE` are set, Watch Later videos appear in the feed with thumbnails and video duration. Transcripts are fetched for summarization; video descriptions are used as a fallback. Marking a video done removes it from Watch Later via the Innertube API.
 
 ## Setup
 
@@ -55,8 +57,13 @@ cp .env.example .env   # fill in your credentials (see below)
 | `RAINDROP_TEST_TOKEN` | Raindrop.io API test token — enables article feed from your Unsorted collection |
 | `WYBORCZA_SCHOWEK_URL` | Full URL of your logged-in Wyborcza Schowek page |
 | `WYBORCZA_COOKIE_FILE` | Path to a cookie export file (Netscape, JSON, or plain text with the raw `Cookie` header) |
+| `YOUTUBE_ENABLED` | Set to `true` (or `1`/`yes`) to enable YouTube Watch Later integration |
+| `YOUTUBE_COOKIE_FILE` | Path to a YouTube cookie export (Netscape or JSON array with `{name, value, ...}` objects) |
 
-To regenerate `GOOGLE_REFRESH_TOKEN`, run the one-shot script in the project history that uses `InstalledAppFlow.run_local_server`.
+To regenerate `GOOGLE_REFRESH_TOKEN` (now covering Gmail + YouTube scopes), run `get_token.py`:
+```bash
+.venv/bin/python get_token.py
+```
 
 ### Wyborcza cookie setup
 
@@ -109,6 +116,8 @@ launchctl unload ~/Library/LaunchAgents/com.newsletterman.plist \
 | `gmail_client.py` | Gmail API calls, local JSON cache, label management |
 | `raindrop_client.py` | Raindrop.io API calls, local JSON cache, archive/unread management |
 | `wyborcza_client.py` | Wyborcza.pl Schowek sync and authenticated article fetching via browser cookies |
+| `youtube_client.py` | YouTube Watch Later sync via Innertube API, transcript/description fetching, WL removal |
+| `get_token.py` | One-shot script to obtain a Google refresh token covering Gmail + YouTube scopes |
 | `summarizer.py` | OpenAI summarization wrapper with language detection |
 | `scorer.py` | GPT-4o-mini scoring against personal context (relevance + challenge) |
 | `config.py` | Author alias overrides |
