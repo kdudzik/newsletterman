@@ -117,7 +117,7 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
   border-radius: 8px;
   transition: border-color .15s, filter .15s;
 }
-.card:hover { filter: brightness(.97); border-color: var(--sender-color, var(--border)); }
+.card:hover { background: #f9f9f9; border-color: var(--sender-color, var(--border)); }
 
 .card-link {
   display: flex;
@@ -253,6 +253,7 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
   display: flex;
   flex-direction: column;
   gap: .4rem;
+  row-gap: 1rem;
 }
 
 .filter-row {
@@ -260,28 +261,45 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
   flex-wrap: wrap;
   gap: .4rem;
 }
+.filter-row-groups {
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  gap: 0;
+}
+.filter-group {
+  display: flex;
+  gap: .4rem;
+  justify-content: center;
+  flex: 1;
+}
+.filter-group:first-child { justify-content: flex-start; }
+.filter-group:last-child { justify-content: flex-end; }
 
 .filter-btn {
   padding: .2rem .6rem;
   border-radius: 99px;
-  border: 1px solid var(--pill-color, var(--border));
+  border: 1px solid var(--border);
   background: transparent;
-  color: var(--pill-color, var(--muted));
+  color: var(--muted);
   font-size: .75rem;
   cursor: pointer;
-  transition: border-color .15s, color .15s, background .15s;
+  opacity: 0.65;
+  transition: border-color .15s, color .15s, background .15s, opacity .15s;
   display: inline-flex;
   align-items: center;
   gap: .35rem;
 }
+.filter-btn.active { opacity: 1; }
 .filter-btn:not([data-sender]) { --pill-color: var(--muted); }
 .filter-btn[data-sender=""] { --pill-color: var(--muted); }
 .filter-btn:hover {
+  opacity: 0.8;
   background: color-mix(in srgb, var(--pill-color, var(--accent)) 12%, transparent);
 }
 .filter-btn.active {
-  background: var(--pill-color, var(--accent));
-  border-color: var(--pill-color, var(--accent));
+  opacity: 1;
+  background: #3a3a3a;
+  border-color: #3a3a3a;
   color: #fff;
 }
 .filter-btn.active .pill-count { background: rgba(255,255,255,.25); color: #fff; }

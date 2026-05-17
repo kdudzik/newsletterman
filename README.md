@@ -1,13 +1,14 @@
 # Newsletter Man
 
-A personal newsletter reader that surfaces Gmail messages tagged **Read later**, summarizes them with GPT-4o-mini, and serves them via a local web UI.
+A personal reading hub that surfaces Gmail messages tagged **Read later** and Raindrop.io bookmarks, summarizes them with GPT-4o-mini, and serves them via a local web UI.
 
 ## How it works
 
 1. Gmail messages with the **Read later** label are fetched and cached locally (`.newsletter_cache/`).
-2. Summaries are generated automatically in the background using `gpt-4o-mini`.
-3. A FastAPI server serves the reader UI at `http://127.0.0.1:7431`.
-4. The cache syncs every 60 seconds while the server is running.
+2. Raindrop.io bookmarks from your **Unsorted** collection are fetched and cached locally (`.raindrop_cache/`).
+3. Summaries are generated automatically in the background using `gpt-4o-mini`.
+4. A FastAPI server serves the reader UI at `http://127.0.0.1:7431`.
+5. Both caches sync every 60 seconds while the server is running.
 
 ## Features
 
@@ -21,6 +22,7 @@ A personal newsletter reader that surfaces Gmail messages tagged **Read later**,
 - **Subject filter** — set `NEWSLETTER_EXCLUDE_SUBJECT` to drop matching newsletters from the feed without touching Gmail.
 - **Hot-reload** — the dev server watches `*.css`, `*.html`, and `*.js` for changes.
 - **Personal relevance scoring** — if a `personal_context.md` file is present (describing your values, worldview, and priorities), each newsletter is scored 0–10 on **relevance** (alignment with your interests) and **challenge** (how much it tensions your worldview). Scores appear as instant-tooltip badges on cards. The sort group gains **Most relevant** and **Most challenging** options.
+- **Raindrop.io integration** — if `RAINDROP_TEST_TOKEN` is set, articles from your Raindrop **Unsorted** collection appear in the feed alongside newsletters. Marking an article done moves it to an **Archive** collection in Raindrop.
 
 ## Setup
 
@@ -47,6 +49,7 @@ cp .env.example .env   # fill in your credentials (see below)
 | `GMAIL_READ_LATER_LABEL` | Gmail label to watch (default: `Read later`) |
 | `NEWSLETTER_EXCLUDE_SUBJECT` | Drop newsletters whose subject contains this string |
 | `PERSONAL_CONTEXT_FILE` | Path to a markdown file describing your values and worldview for relevance scoring (default: `personal_context.md` if it exists) |
+| `RAINDROP_TEST_TOKEN` | Raindrop.io API test token — enables article feed from your Unsorted collection |
 
 To regenerate `GOOGLE_REFRESH_TOKEN`, run the one-shot script in the project history that uses `InstalledAppFlow.run_local_server`.
 
@@ -84,6 +87,7 @@ launchctl unload ~/Library/LaunchAgents/com.newsletterman.plist \
 |---|---|
 | `main.py` | FastAPI app — routes, lifespan, template filters, markdown rendering |
 | `gmail_client.py` | Gmail API calls, local JSON cache, label management |
+| `raindrop_client.py` | Raindrop.io API calls, local JSON cache, archive/unread management |
 | `summarizer.py` | OpenAI summarization wrapper with language detection |
 | `scorer.py` | GPT-4o-mini scoring against personal context (relevance + challenge) |
 | `config.py` | Author alias overrides |

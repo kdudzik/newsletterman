@@ -10,10 +10,9 @@
   <header>
     <div class="header-top">
       <div>
-        <h1>📬 Newsletter Man</h1>
         {% set unread_count = newsletters | rejectattr('read', 'equalto', true) | list | length %}
         {% set total_mins = newsletters | rejectattr('read', 'equalto', true) | map(attribute='word_count') | map('read_time_minutes') | sum %}
-        <p class="subtitle" id="subtitle">{{ unread_count }} unread in <em>Read later</em> · <span id="total-time">{{ total_mins // 60 }} h {{ '%02d' | format(total_mins % 60) }} min</span></p>
+        <h1>📬 Newsletter Man <span class="subtitle" id="subtitle">{{ unread_count }} unread · <span id="total-time">{{ total_mins // 60 }} h {{ '%02d' | format(total_mins % 60) }} min</span></span></h1>
       </div>
       <div class="header-actions">
         <div class="sort-group" role="group" aria-label="Sort order">
@@ -48,15 +47,32 @@
             {% set _ = counts.update({name: 1}) %}
           {% endif %}
         {% endfor %}
-        {% for name in senders %}
+        {% for name, _ in counts.items() | sort(attribute=1, reverse=True) %}
           <button class="filter-btn" data-sender="{{ name }}">{{ name }} <span class="pill-count">{{ counts[name] }}</span></button>
         {% endfor %}
       </div>
-      <div class="filter-row">
-        <button class="filter-btn length-btn active" data-length="">All lengths</button>
-        <button class="filter-btn length-btn" data-length="short">Short <span class="length-range">≤7m</span> <span class="pill-count">0</span></button>
-        <button class="filter-btn length-btn" data-length="medium">Medium <span class="length-range">8–14m</span> <span class="pill-count">0</span></button>
-        <button class="filter-btn length-btn" data-length="long">Long <span class="length-range">15m+</span> <span class="pill-count">0</span></button>
+      <div class="filter-row filter-row-groups">
+        <div class="filter-group">
+          <button class="filter-btn length-btn active" data-length="">All lengths</button>
+          <button class="filter-btn length-btn" data-length="short">Short <span class="length-range">≤7m</span> <span class="pill-count">0</span></button>
+          <button class="filter-btn length-btn" data-length="medium">Medium <span class="length-range">8–14m</span> <span class="pill-count">0</span></button>
+          <button class="filter-btn length-btn" data-length="long">Long <span class="length-range">15m+</span> <span class="pill-count">0</span></button>
+        </div>
+        {% if has_raindrop %}
+        <div class="filter-group">
+          <button class="filter-btn source-btn active" data-source="">All sources</button>
+          <button class="filter-btn source-btn" data-source="gmail">Newsletters <span class="pill-count">0</span></button>
+          <button class="filter-btn source-btn" data-source="raindrop">Articles <span class="pill-count">0</span></button>
+        </div>
+        {% endif %}
+        {% if newsletters | selectattr('lean', 'defined') | list | length %}
+        <div class="filter-group">
+          <button class="filter-btn lean-btn active" data-lean="">All views</button>
+          <button class="filter-btn lean-btn" data-lean="left">Left <span class="pill-count">0</span></button>
+          <button class="filter-btn lean-btn" data-lean="center">Center <span class="pill-count">0</span></button>
+          <button class="filter-btn lean-btn" data-lean="right">Right <span class="pill-count">0</span></button>
+        </div>
+        {% endif %}
       </div>
     </div>
     {% endif %}
@@ -68,18 +84,27 @@
     {% else %}
     <ul class="newsletter-list" id="newsletter-list">
       {% for n in newsletters %}
-      <li class="newsletter-item" data-sender="{{ n.from | sender_name }}" data-ts="{{ n.date | date_ts }}" data-read="{{ 'true' if n.read else 'false' }}" data-mins="{{ n.word_count | read_time_minutes }}" data-relevance="{{ n.relevance_score if 'relevance_score' in n else '' }}" data-challenge="{{ n.challenge_score if 'challenge_score' in n else '' }}" data-lean="{{ n.lean if 'lean' in n else '' }}">
+      {% set is_raindrop = n.get('source') == 'raindrop' %}
+      <li class="newsletter-item" data-sender="{{ n.from | sender_name }}" data-ts="{{ n.date | date_ts }}" data-read="{{ 'true' if n.read else 'false' }}" data-mins="{{ n.word_count | read_time_minutes }}" data-relevance="{{ n.relevance_score if 'relevance_score' in n else '' }}" data-challenge="{{ n.challenge_score if 'challenge_score' in n else '' }}" data-lean="{{ n.lean if 'lean' in n else '' }}" data-source="{{ n.source if 'source' in n else 'gmail' }}">
         <div class="card">
           <div class="card-link">
+            {% if is_raindrop %}
+            <a class="subject gmail-link" href="{{ n.url }}" target="_blank" rel="noopener" title="Open article">{{ n.subject | unescape }}<svg class="ext-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="11" height="11"><path fill-rule="evenodd" d="M4.75 2a.75.75 0 0 0 0 1.5h5.44L2.97 10.72a.75.75 0 1 0 1.06 1.06L11.25 4.56v5.44a.75.75 0 0 0 1.5 0V2.75A.75.75 0 0 0 12 2H4.75Z" clip-rule="evenodd"/></svg></a>
+            {% else %}
             <a class="subject gmail-link" href="https://mail.google.com/mail/u/0/#all/{{ n.id }}" target="_blank" rel="noopener" title="View in Gmail">{{ n.subject | unescape }}<svg class="ext-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="11" height="11"><path fill-rule="evenodd" d="M4.75 2a.75.75 0 0 0 0 1.5h5.44L2.97 10.72a.75.75 0 1 0 1.06 1.06L11.25 4.56v5.44a.75.75 0 0 0 1.5 0V2.75A.75.75 0 0 0 12 2H4.75Z" clip-rule="evenodd"/></svg></a>
-            <span class="meta">{{ n.from | sender_name }} · {{ n.date | relative_date }}{% if n.word_count %} · <span class="read-time read-time-{{ 'long' if (n.word_count | read_time_minutes) >= 15 else ('medium' if (n.word_count | read_time_minutes) >= 8 else 'short') }}">{{ n.word_count | read_time }}</span>{% endif %}{% if 'relevance_score' in n or 'lean' in n %} · <span class="score-badges">{% if 'relevance_score' in n %}<span class="score-badge relevance-{{ 'high' if n.relevance_score >= 7 else ('mid' if n.relevance_score >= 4 else 'low') }}">↑ {{ n.relevance_score }}<span class="score-tip">{{ n.relevance_note }}</span></span><span class="score-badge challenge-{{ 'high' if n.challenge_score >= 7 else ('mid' if n.challenge_score >= 4 else 'low') }}">⚡ {{ n.challenge_score }}<span class="score-tip">{{ n.challenge_note }}</span></span>{% endif %}{% if 'lean' in n %}<span class="score-badge lean-{{ n.lean | lower }}">{{ n.lean }}<span class="score-tip">{{ n.lean_note }}</span></span>{% endif %}</span>{% endif %}</span>
+            {% endif %}
+            <span class="meta">{% if is_raindrop %}<span class="source-badge" title="Saved article">🔖</span> {% endif %}{{ n.from | sender_name }} · {{ n.date | relative_date }}{% if n.word_count %} · <span class="read-time read-time-{{ 'long' if (n.word_count | read_time_minutes) >= 15 else ('medium' if (n.word_count | read_time_minutes) >= 8 else 'short') }}">{{ n.word_count | read_time }}</span>{% endif %}{% if 'relevance_score' in n or 'lean' in n %} · <span class="score-badges">{% if 'relevance_score' in n %}<span class="score-badge relevance-{{ 'high' if n.relevance_score >= 7 else ('mid' if n.relevance_score >= 4 else 'low') }}">↑ {{ n.relevance_score }}<span class="score-tip">{{ n.relevance_note }}</span></span><span class="score-badge challenge-{{ 'high' if n.challenge_score >= 7 else ('mid' if n.challenge_score >= 4 else 'low') }}">⚡ {{ n.challenge_score }}<span class="score-tip">{{ n.challenge_note }}</span></span>{% endif %}{% if 'lean' in n %}<span class="score-badge lean-{{ n.lean | lower }}">{{ n.lean }}<span class="score-tip">{{ n.lean_note }}</span></span>{% endif %}</span>{% endif %}</span>
             {% if n.summary %}<div class="snippet summary-snippet">{{ n.summary | markdown_summary }}</div>{% else %}<span class="snippet">{{ n.snippet | unescape }}</span>{% endif %}
           </div>
+          {% if is_raindrop %}
+          <a class="card-open-panel" href="{{ n.url }}" target="_blank" rel="noopener">Open <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path fill-rule="evenodd" d="M4.75 2a.75.75 0 0 0 0 1.5h5.44L2.97 10.72a.75.75 0 1 0 1.06 1.06L11.25 4.56v5.44a.75.75 0 0 0 1.5 0V2.75A.75.75 0 0 0 12 2H4.75Z" clip-rule="evenodd"/></svg></a>
+          {% else %}
           <a class="card-open-panel" href="/newsletter/{{ n.id }}">Open <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path fill-rule="evenodd" d="M8 1a.75.75 0 0 1 .75.75v6.19l1.97-1.97a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.03a.75.75 0 0 1 1.06-1.06l1.97 1.97V1.75A.75.75 0 0 1 8 1ZM1.5 13.25a.75.75 0 0 1 .75-.75h11.5a.75.75 0 0 1 0 1.5H2.25a.75.75 0 0 1-.75-.75Z" clip-rule="evenodd"/></svg></a>
-          <button class="card-icon-btn card-corner-btn card-unread-btn" data-id="{{ n.id }}" title="Mark as unread" style="{{ 'display:none' if not n.read else '' }}">
+          {% endif %}
+          <button class="card-icon-btn card-corner-btn card-unread-btn" data-id="{{ n.id }}" data-source="{{ n.source if 'source' in n else 'gmail' }}" title="Mark as unread" style="{{ 'display:none' if not n.read else '' }}">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path d="M3 4a2 2 0 0 0-2 2v1.161l8.441 4.221a1.25 1.25 0 0 0 1.118 0L19 7.162V6a2 2 0 0 0-2-2H3Z"/><path d="m19 8.839-7.77 3.885a2.75 2.75 0 0 1-2.46 0L1 8.839V14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.839Z"/></svg>
           </button>
-          <button class="card-icon-btn card-corner-btn card-done-btn" data-id="{{ n.id }}" title="Mark as read" style="{{ 'display:none' if n.read else '' }}">
+          <button class="card-icon-btn card-corner-btn card-done-btn" data-id="{{ n.id }}" data-source="{{ n.source if 'source' in n else 'gmail' }}" title="Mark as read" style="{{ 'display:none' if n.read else '' }}">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clip-rule="evenodd"/></svg>
           </button>
         </div>
@@ -124,6 +149,8 @@
         sort: document.querySelector('.sort-group .sort-btn.active')?.dataset.sort || 'newest',
         sender: document.querySelector('.filter-btn[data-sender].active')?.dataset.sender || '',
         length: document.querySelector('.length-btn.active')?.dataset.length || '',
+        source: document.querySelector('.source-btn.active')?.dataset.source || '',
+        lean: document.querySelector('.lean-btn.active')?.dataset.lean || '',
         showRead: showingRead,
       }));
     }
@@ -137,14 +164,25 @@
       return 'short';
     }
 
+    function leanBucket(lean) {
+      if (lean === 'L' || lean === 'XL') return 'left';
+      if (lean === 'R' || lean === 'XR') return 'right';
+      if (lean === 'C') return 'center';
+      return '';
+    }
+
     function applyView() {
       const activeSender = document.querySelector('.filter-btn[data-sender].active')?.dataset.sender || '';
       const activeLength = document.querySelector('.length-btn.active')?.dataset.length || '';
+      const activeSource = document.querySelector('.source-btn.active')?.dataset.source || '';
+      const activeLean = document.querySelector('.lean-btn.active')?.dataset.lean || '';
       document.querySelectorAll('.newsletter-item').forEach(item => {
         const isRead = item.dataset.read === 'true';
         const senderMatch = !activeSender || item.dataset.sender === activeSender;
         const lengthMatch = !activeLength || lengthBucket(item.dataset.mins) === activeLength;
-        item.style.display = (isRead === showingRead && senderMatch && lengthMatch) ? '' : 'none';
+        const sourceMatch = !activeSource || item.dataset.source === activeSource;
+        const leanMatch = !activeLean || leanBucket(item.dataset.lean) === activeLean;
+        item.style.display = (isRead === showingRead && senderMatch && lengthMatch && sourceMatch && leanMatch) ? '' : 'none';
       });
       updateSubtitle();
       updateFilterCounts();
@@ -156,10 +194,11 @@
 
     function updateFilterCounts() {
       const activeLength = document.querySelector('.length-btn.active')?.dataset.length || '';
+      const activeSender = document.querySelector('.filter-btn[data-sender].active')?.dataset.sender || '';
+      const activeSource = document.querySelector('.source-btn.active')?.dataset.source || '';
       const allItems = Array.from(document.querySelectorAll('.newsletter-item'));
 
-      // Length pills: count items matching current read/unread mode + active sender filter
-      const activeSender = document.querySelector('.filter-btn[data-sender].active')?.dataset.sender || '';
+      // Length pills
       document.querySelectorAll('.length-btn[data-length]').forEach(btn => {
         const length = btn.dataset.length;
         if (!length) return;
@@ -167,6 +206,7 @@
           const isRead = item.dataset.read === 'true';
           if (isRead !== showingRead) return false;
           if (activeSender && item.dataset.sender !== activeSender) return false;
+          if (activeSource && item.dataset.source !== activeSource) return false;
           return lengthBucket(item.dataset.mins) === length;
         }).length;
         const pill = btn.querySelector('.pill-count');
@@ -178,22 +218,70 @@
         }
       });
 
-      // Sender pills: count items matching current read/unread mode + length filter for that sender
+      // Sender pills
       document.querySelectorAll('.filter-btn[data-sender]').forEach(btn => {
         const sender = btn.dataset.sender;
-        const count = allItems.filter(item => {
+        const matchingItems = allItems.filter(item => {
           const isRead = item.dataset.read === 'true';
           if (isRead !== showingRead) return false;
           if (sender && item.dataset.sender !== sender) return false;
           if (activeLength && lengthBucket(item.dataset.mins) !== activeLength) return false;
+          if (activeSource && item.dataset.source !== activeSource) return false;
+          return true;
+        });
+        const count = matchingItems.length;
+        const pill = btn.querySelector('.pill-count');
+        if (pill) pill.textContent = count;
+
+        // Determine sender's source (all items for a sender should share the same source)
+        const senderSource = sender
+          ? (allItems.find(i => i.dataset.sender === sender)?.dataset.source || 'gmail')
+          : '';
+
+        // In "All sources" mode: hide article sender pills with only 1 item
+        const hideLowVolumeArticle = !activeSource && senderSource === 'raindrop' && count <= 1;
+        const hide = (count === 0 && sender) || hideLowVolumeArticle;
+        btn.style.display = hide ? 'none' : '';
+        if (hide && btn.classList.contains('active') && sender) {
+          btn.classList.remove('active');
+          document.querySelector('.filter-btn[data-sender=""]')?.classList.add('active');
+        }
+      });
+
+      // Source pills
+      document.querySelectorAll('.source-btn[data-source]').forEach(btn => {
+        const source = btn.dataset.source;
+        if (!source) return; // skip "All sources"
+        const count = allItems.filter(item => {
+          const isRead = item.dataset.read === 'true';
+          if (isRead !== showingRead) return false;
+          if (activeSender && item.dataset.sender !== activeSender) return false;
+          if (activeLength && lengthBucket(item.dataset.mins) !== activeLength) return false;
+          if (source && item.dataset.source !== source) return false;
           return true;
         }).length;
         const pill = btn.querySelector('.pill-count');
         if (pill) pill.textContent = count;
-        btn.style.display = (count === 0 && sender) ? 'none' : '';
-        if (count === 0 && btn.classList.contains('active') && sender) {
+      });
+
+      // Lean pills
+      document.querySelectorAll('.lean-btn[data-lean]').forEach(btn => {
+        const lean = btn.dataset.lean;
+        if (!lean) return; // skip "All views"
+        const count = allItems.filter(item => {
+          const isRead = item.dataset.read === 'true';
+          if (isRead !== showingRead) return false;
+          if (activeSender && item.dataset.sender !== activeSender) return false;
+          if (activeLength && lengthBucket(item.dataset.mins) !== activeLength) return false;
+          if (activeSource && item.dataset.source !== activeSource) return false;
+          return leanBucket(item.dataset.lean) === lean;
+        }).length;
+        const pill = btn.querySelector('.pill-count');
+        if (pill) pill.textContent = count;
+        btn.style.display = count === 0 ? 'none' : '';
+        if (count === 0 && btn.classList.contains('active')) {
           btn.classList.remove('active');
-          document.querySelector('.filter-btn[data-sender=""]')?.classList.add('active');
+          document.querySelector('.lean-btn[data-lean=""]')?.classList.add('active');
         }
       });
     }
@@ -205,9 +293,9 @@
       const totalMins = visibleItems.reduce((s, el) => s + (Number(el.dataset.mins) || 0), 0);
       const sub = document.getElementById('subtitle');
       if (showingRead) {
-        sub.innerHTML = `${count} read · <em>Read later archive</em> · ${fmtTime(totalMins)}`;
+        sub.innerHTML = `${count} read · ${fmtTime(totalMins)}`;
       } else {
-        sub.innerHTML = `${count} unread in <em>Read later</em> · ${fmtTime(totalMins)}`;
+        sub.innerHTML = `${count} unread · ${fmtTime(totalMins)}`;
       }
     }
 
@@ -219,11 +307,19 @@
       saveState();
     }
 
+    function doneUrl(id, source) {
+      return source === 'raindrop' ? `/article/${id}/done` : `/newsletter/${id}/done`;
+    }
+    function unreadUrl(id, source) {
+      return source === 'raindrop' ? `/article/${id}/unread` : `/newsletter/${id}/unread`;
+    }
+
     document.querySelectorAll('.card-done-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
+        const source = btn.dataset.source || 'gmail';
         btn.disabled = true;
-        await fetch(`/newsletter/${id}/done`, { method: 'POST' });
+        await fetch(doneUrl(id, source), { method: 'POST' });
         const item = btn.closest('.newsletter-item');
         item.dataset.read = 'true';
         btn.style.display = 'none';
@@ -236,8 +332,9 @@
     document.querySelectorAll('.card-unread-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
+        const source = btn.dataset.source || 'gmail';
         btn.disabled = true;
-        await fetch(`/newsletter/${id}/unread`, { method: 'POST' });
+        await fetch(unreadUrl(id, source), { method: 'POST' });
         const item = btn.closest('.newsletter-item');
         item.dataset.read = 'false';
         btn.style.display = 'none';
@@ -270,6 +367,20 @@
           }
         }
         if (s.sort) setSort(s.sort);
+        if (s.source !== undefined) {
+          const match = document.querySelector(`.source-btn[data-source="${CSS.escape(s.source)}"]`);
+          if (match) {
+            document.querySelectorAll('.source-btn').forEach(b => b.classList.remove('active'));
+            match.classList.add('active');
+          }
+        }
+        if (s.lean !== undefined) {
+          const match = document.querySelector(`.lean-btn[data-lean="${CSS.escape(s.lean)}"]`);
+          if (match) {
+            document.querySelectorAll('.lean-btn').forEach(b => b.classList.remove('active'));
+            match.classList.add('active');
+          }
+        }
       } catch (e) {}
     })();
 
@@ -295,6 +406,24 @@
     document.querySelectorAll('.length-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('.length-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        applyView();
+        saveState();
+      });
+    });
+
+    document.querySelectorAll('.source-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.source-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        applyView();
+        saveState();
+      });
+    });
+
+    document.querySelectorAll('.lean-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.lean-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         applyView();
         saveState();

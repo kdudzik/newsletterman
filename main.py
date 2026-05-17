@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from gmail_client import get_service, list_newsletters_cached, sync_newsletters, get_newsletter_body, remove_read_later_label, restore_read_later_label, _load_entry, _save_entry
+import raindrop_client as _raindrop
 from summarizer import summarize
 import scorer as _scorer
 try:
@@ -30,13 +31,31 @@ def _context_file() -> str:
     return ""
 
 _gmail_service = None
+_raindrop_token: str = os.getenv("RAINDROP_TEST_TOKEN", "")
 
 
-def _score_entry(message_id: str) -> None:
-    """Generate relevance/challenge/lean scores for one newsletter. Blocking."""
+def _is_raindrop(entry_id: str) -> bool:
+    return entry_id.startswith("raindrop-")
+
+
+def _load_any(entry_id: str) -> dict:
+    if _is_raindrop(entry_id):
+        return _raindrop._load_entry(entry_id)
+    return _load_entry(entry_id)
+
+
+def _save_any(entry_id: str, data: dict) -> None:
+    if _is_raindrop(entry_id):
+        _raindrop._save_entry(entry_id, data)
+    else:
+        _save_entry(entry_id, data)
+
+
+def _score_entry(entry_id: str) -> None:
+    """Generate relevance/challenge/lean scores for one entry. Blocking."""
     ctx = _context_file()
     try:
-        cached = _load_entry(message_id)
+        cached = _load_any(entry_id)
         summary = cached.get("summary", "")
         if not summary:
             return
@@ -46,46 +65,60 @@ def _score_entry(message_id: str) -> None:
             if scores:
                 cached.update(scores)
                 changed = True
-                print(f"[score] rel/ch done: {message_id}")
+                print(f"[score] rel/ch done: {entry_id}")
         if cached.get("lean") is None:
             lean = _scorer.score_political_lean(summary)
             if lean:
                 cached.update(lean)
                 changed = True
-                print(f"[score] lean done: {message_id} {lean['lean']}")
+                print(f"[score] lean done: {entry_id} {lean['lean']}")
         if changed:
-            _save_entry(message_id, cached)
+            _save_any(entry_id, cached)
     except Exception as e:
-        print(f"[score] error {message_id}: {e}")
+        print(f"[score] error {entry_id}: {e}")
 
 
-def _summarize_entry(message_id: str, service) -> None:
-    """Fetch body (if needed) and generate summary for one newsletter. Blocking."""
+def _summarize_entry(entry_id: str, service) -> None:
+    """Fetch body (if needed) and generate summary for one entry. Blocking."""
     try:
-        cached = _load_entry(message_id)
+        cached = _load_any(entry_id)
         if cached.get("summary"):
-            _score_entry(message_id)
+            _score_entry(entry_id)
             return
-        data = get_newsletter_body(message_id, service)
-        body = data.get("body", "")
+        if _is_raindrop(entry_id):
+            body = _raindrop.get_article_body(entry_id)
+        else:
+            data = get_newsletter_body(entry_id, service)
+            body = data.get("body", "")
         if not body:
             return
-        summary = summarize(body, data["subject"])
-        cached = _load_entry(message_id)
+        cached = _load_any(entry_id)
+        subject = cached.get("subject", "")
+        summary = summarize(body, subject, is_article=_is_raindrop(entry_id))
         cached["summary"] = summary
-        _save_entry(message_id, cached)
-        print(f"[summarize] done: {message_id}")
-        _score_entry(message_id)
+        _save_any(entry_id, cached)
+        print(f"[summarize] done: {entry_id}")
+        _score_entry(entry_id)
     except Exception as e:
-        print(f"[summarize] error {message_id}: {e}")
+        print(f"[summarize] error {entry_id}: {e}")
+
+
+def _all_cache_files():
+    """Yield (path, entry_id) for all JSON files in both caches."""
+    import json as _json
+    for cache_dir in (
+        Path(__file__).parent / ".newsletter_cache",
+        Path(__file__).parent / ".raindrop_cache",
+    ):
+        if not cache_dir.exists():
+            continue
+        for f in sorted(cache_dir.glob("*.json")):
+            yield f, f.stem
 
 
 async def _ensure_summaries() -> None:
-    """Background task: summarize all cached newsletters missing a summary."""
+    """Background task: summarize all cached entries missing a summary."""
     import json as _json
-    cache_dir = Path(__file__).parent / ".newsletter_cache"
-    if not cache_dir.exists():
-        return
     # Build a dedicated service so background threads don't share httplib2
     # connections with the main event loop (httplib2 is not thread-safe).
     try:
@@ -94,29 +127,26 @@ async def _ensure_summaries() -> None:
         print(f"[summarize] could not build service: {e}")
         return
     loop = asyncio.get_event_loop()
-    for f in sorted(cache_dir.glob("*.json")):
+    for f, entry_id in _all_cache_files():
         try:
             entry = _json.loads(f.read_text())
         except Exception:
             continue
         if "subject" in entry and not entry.get("summary"):
-            await loop.run_in_executor(None, _summarize_entry, f.stem, bg_service)
+            await loop.run_in_executor(None, _summarize_entry, entry_id, bg_service)
 
 
 async def _ensure_scores() -> None:
-    """Background task: score all cached newsletters that have a summary but no scores yet."""
+    """Background task: score all cached entries that have a summary but no scores yet."""
     import json as _json
-    cache_dir = Path(__file__).parent / ".newsletter_cache"
-    if not cache_dir.exists():
-        return
     loop = asyncio.get_event_loop()
-    for f in sorted(cache_dir.glob("*.json")):
+    for f, entry_id in _all_cache_files():
         try:
             entry = _json.loads(f.read_text())
         except Exception:
             continue
         if entry.get("summary") and (entry.get("relevance_score") is None or entry.get("lean") is None):
-            await loop.run_in_executor(None, _score_entry, f.stem)
+            await loop.run_in_executor(None, _score_entry, entry_id)
 
 
 async def _bg_sync():
@@ -124,6 +154,8 @@ async def _bg_sync():
         await asyncio.sleep(60)
         try:
             sync_newsletters(_gmail_service)
+            if _raindrop_token:
+                _raindrop.sync_articles(_raindrop_token)
             await _ensure_summaries()
             await _ensure_scores()
         except Exception as e:
@@ -134,6 +166,11 @@ async def _bg_sync():
 async def lifespan(app: FastAPI):
     global _gmail_service
     _gmail_service = get_service()
+    if _raindrop_token:
+        try:
+            _raindrop.sync_articles(_raindrop_token)
+        except Exception as e:
+            print(f"[raindrop] startup sync failed: {e}")
     asyncio.create_task(_bg_sync())
     asyncio.create_task(_ensure_summaries())
     asyncio.create_task(_ensure_scores())
@@ -273,20 +310,38 @@ templates.env.filters["read_time_minutes"] = _read_time_minutes
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    from email.utils import parsedate_to_datetime
     newsletters = list_newsletters_cached()
+    if _raindrop_token:
+        articles = _raindrop.list_articles_cached()
+        all_entries = newsletters + articles
+        def _ts(e):
+            try:
+                return parsedate_to_datetime(e.get("date", "")).timestamp()
+            except Exception:
+                return 0.0
+        all_entries.sort(key=_ts, reverse=True)
+    else:
+        all_entries = newsletters
+    has_raindrop = bool(_raindrop_token) and any(e.get("source") == "raindrop" for e in all_entries)
     return templates.TemplateResponse("index.html", {
         "request": request,
-        "newsletters": newsletters,
+        "newsletters": all_entries,
         "has_personal_context": bool(_context_file()),
+        "has_raindrop": has_raindrop,
     })
 
 
 @app.post("/refresh")
 async def refresh():
     newsletters = sync_newsletters(_gmail_service)
+    if _raindrop_token:
+        articles = _raindrop.sync_articles(_raindrop_token)
+    else:
+        articles = []
     asyncio.create_task(_ensure_summaries())
     asyncio.create_task(_ensure_scores())
-    return {"count": len(newsletters)}
+    return {"count": len(newsletters) + len(articles)}
 
 
 @app.post("/rescore")
@@ -350,6 +405,25 @@ async def mark_unread(message_id: str):
     ok = restore_read_later_label(message_id, _gmail_service)
     if not ok:
         raise HTTPException(status_code=404, detail="Label not found")
+    return {"ok": True}
+
+
+@app.post("/article/{article_id}/done")
+async def article_done(article_id: str):
+    if not _raindrop_token:
+        raise HTTPException(status_code=503, detail="Raindrop not configured")
+    loop = asyncio.get_event_loop()
+    ok = await loop.run_in_executor(None, _raindrop.move_to_archive, article_id, _raindrop_token)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Article not found or move failed")
+    return {"ok": True}
+
+
+@app.post("/article/{article_id}/unread")
+async def article_unread(article_id: str):
+    ok = _raindrop.mark_unread_local(article_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Article not found")
     return {"ok": True}
 
 
