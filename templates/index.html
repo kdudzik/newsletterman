@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <title>Newsletter Man</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📬</text></svg>">
   <link rel="stylesheet" href="/static/style.css?v={{ css_version() }}">
 </head>
 <body>
@@ -43,9 +44,9 @@
       </div>
       <div class="filter-row">
         <button class="filter-btn length-btn active" data-length="">All lengths</button>
-        <button class="filter-btn length-btn" data-length="short">Short <span class="pill-count">≤7m</span></button>
-        <button class="filter-btn length-btn" data-length="medium">Medium <span class="pill-count">8–14m</span></button>
-        <button class="filter-btn length-btn" data-length="long">Long <span class="pill-count">15m+</span></button>
+        <button class="filter-btn length-btn" data-length="short">Short <span class="length-range">≤7m</span> <span class="pill-count">0</span></button>
+        <button class="filter-btn length-btn" data-length="medium">Medium <span class="length-range">8–14m</span> <span class="pill-count">0</span></button>
+        <button class="filter-btn length-btn" data-length="long">Long <span class="length-range">15m+</span> <span class="pill-count">0</span></button>
       </div>
     </div>
     {% endif %}
@@ -126,10 +127,55 @@
         item.style.display = (isRead === showingRead && senderMatch && lengthMatch) ? '' : 'none';
       });
       updateSubtitle();
+      updateFilterCounts();
     }
 
     function fmtTime(mins) {
       return `${Math.floor(mins / 60)} h ${String(mins % 60).padStart(2, '0')} min`;
+    }
+
+    function updateFilterCounts() {
+      const activeLength = document.querySelector('.length-btn.active')?.dataset.length || '';
+      const allItems = Array.from(document.querySelectorAll('.newsletter-item'));
+
+      // Length pills: count items matching current read/unread mode + active sender filter
+      const activeSender = document.querySelector('.filter-btn[data-sender].active')?.dataset.sender || '';
+      document.querySelectorAll('.length-btn[data-length]').forEach(btn => {
+        const length = btn.dataset.length;
+        if (!length) return;
+        const count = allItems.filter(item => {
+          const isRead = item.dataset.read === 'true';
+          if (isRead !== showingRead) return false;
+          if (activeSender && item.dataset.sender !== activeSender) return false;
+          return lengthBucket(item.dataset.mins) === length;
+        }).length;
+        const pill = btn.querySelector('.pill-count');
+        if (pill) pill.textContent = count;
+        btn.style.display = count === 0 ? 'none' : '';
+        if (count === 0 && btn.classList.contains('active')) {
+          btn.classList.remove('active');
+          document.querySelector('.length-btn[data-length=""]')?.classList.add('active');
+        }
+      });
+
+      // Sender pills: count items matching current read/unread mode + length filter for that sender
+      document.querySelectorAll('.filter-btn[data-sender]').forEach(btn => {
+        const sender = btn.dataset.sender;
+        const count = allItems.filter(item => {
+          const isRead = item.dataset.read === 'true';
+          if (isRead !== showingRead) return false;
+          if (sender && item.dataset.sender !== sender) return false;
+          if (activeLength && lengthBucket(item.dataset.mins) !== activeLength) return false;
+          return true;
+        }).length;
+        const pill = btn.querySelector('.pill-count');
+        if (pill) pill.textContent = count;
+        btn.style.display = (count === 0 && sender) ? 'none' : '';
+        if (count === 0 && btn.classList.contains('active') && sender) {
+          btn.classList.remove('active');
+          document.querySelector('.filter-btn[data-sender=""]')?.classList.add('active');
+        }
+      });
     }
 
     function updateSubtitle() {

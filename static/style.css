@@ -312,3 +312,11 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
   transition: border-color .15s, color .15s;
 }
 .sort-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.length-range {
+  color: var(--muted);
+  font-size: .68rem;
+  font-weight: 400;
+  opacity: .8;
+}
+.filter-btn.active .length-range { color: rgba(255,255,255,.75); opacity: 1; }
