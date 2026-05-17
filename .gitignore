@@ -8,3 +8,4 @@ __pycache__/
 .DS_Store
 .newsletter_cache/
 com.newsletterman.plist
+config.py

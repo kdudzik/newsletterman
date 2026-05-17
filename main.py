@@ -16,6 +16,10 @@ from fastapi.templating import Jinja2Templates
 
 from gmail_client import get_service, list_newsletters_cached, sync_newsletters, get_newsletter_body, remove_read_later_label, restore_read_later_label, _load_entry, _save_entry
 from summarizer import summarize
+try:
+    from config import AUTHOR_ALIASES
+except ImportError:
+    AUTHOR_ALIASES: dict[str, str] = {}
 
 _gmail_service = None
 
@@ -83,9 +87,8 @@ async def lifespan(app: FastAPI):
 
 def _sender_name(from_str: str) -> str:
     m = re.match(r'^"?([^"<]+?)"?\s*<[^>]+>$', from_str.strip())
-    if m:
-        return m.group(1).strip()
-    return from_str.split("<")[0].strip().strip('"')
+    name = m.group(1).strip() if m else from_str.split("<")[0].strip().strip('"')
+    return AUTHOR_ALIASES.get(name, name)
 
 
 def _relative_date(date_str: str) -> str:
@@ -178,9 +181,9 @@ def _markdown_summary(text: str) -> str:
                 out.append('<ul>')
                 in_list = True
             out.append(f'<li>{_bold((is_bullet or is_numbered).group(1))}</li>')
+        elif not line:
+            continue
         else:
-            if not line:
-                continue  # skip blank lines (common between GPT bullets)
             if in_list:
                 out.append('</ul>')
                 in_list = False
@@ -268,4 +271,4 @@ async def mark_unread(message_id: str):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 7431))
-    uvicorn.run("main:app", host="127.0.0.1", port=port, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=port, reload=True, reload_includes=["*.css", "*.html", "*.js"])

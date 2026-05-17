@@ -63,21 +63,26 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
   background: var(--surface);
   border: 1px solid var(--accent);
   border-radius: 8px;
-  padding: 1rem 1.25rem;
+  padding: .75rem 1.25rem;
   margin-bottom: 1.5rem;
   font-size: .9rem;
-  line-height: 1.7;
+  line-height: 1.45;
 }
 .summary-box ul {
   list-style: disc;
   padding-left: 1.4rem;
   margin: 0;
 }
-.summary-box li {
-  margin-bottom: .2rem;
+.summary-box ul + ul,
+.summary-box p + ul,
+.summary-box ul + p {
+  margin-top: .5rem;
 }
-.summary-box li:last-child { margin-bottom: 0; }
-.summary-box p { margin-bottom: .5rem; }
+.summary-box li {
+  margin: 0;
+  line-height: 1.35;
+}
+.summary-box p { margin-bottom: .35rem; }
 .summary-box p:last-child { margin-bottom: 0; }
 .summary-box a {
   color: var(--accent);
@@ -96,6 +101,7 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
   gap: .75rem;
+  align-items: start;
 }
 
 .newsletter-item { display: flex; }
@@ -205,7 +211,17 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
   border-bottom-color: var(--accent);
 }
 .summary-snippet {
-  line-height: 1.4;
+  line-height: 1.35;
+  font-size: .82rem;
+  white-space: normal;
+  margin-top: .5rem;
+}
+.summary-snippet p {
+  margin: .5rem 0 .35rem;
+  line-height: 1.35;
+}
+.summary-snippet p:first-child {
+  margin-top: 0;
 }
 .summary-snippet ul {
   list-style: disc;
@@ -213,7 +229,12 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
   margin: 0;
 }
 .summary-snippet li {
-  margin-bottom: 0;
+  margin: 0;
+  padding: 0;
+  line-height: 1.35;
+}
+.summary-snippet li + li {
+  margin-top: .35rem;
 }
 
 .body-text { margin-top: 1.5rem; }
@@ -253,8 +274,8 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
   align-items: center;
   gap: .35rem;
 }
-.filter-btn:not([data-sender]) { --pill-color: var(--accent); }
-.filter-btn[data-sender=""] { --pill-color: var(--accent); }
+.filter-btn:not([data-sender]) { --pill-color: var(--muted); }
+.filter-btn[data-sender=""] { --pill-color: var(--muted); }
 .filter-btn:hover {
   background: color-mix(in srgb, var(--pill-color, var(--accent)) 12%, transparent);
 }
