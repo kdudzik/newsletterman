@@ -115,6 +115,16 @@
       item.querySelector('.card').style.setProperty('--sender-color', color);
     });
 
+    const LS = 'nlm_view';
+    function saveState() {
+      localStorage.setItem(LS, JSON.stringify({
+        sort: document.querySelector('.sort-group .sort-btn.active')?.dataset.sort || 'newest',
+        sender: document.querySelector('.filter-btn[data-sender].active')?.dataset.sender || '',
+        length: document.querySelector('.length-btn.active')?.dataset.length || '',
+        showRead: showingRead,
+      }));
+    }
+
     let showingRead = false;
 
     function lengthBucket(mins) {
@@ -203,6 +213,7 @@
       const btn = document.getElementById('view-toggle-btn');
       btn.textContent = showingRead ? 'Show unread' : 'Show read';
       applyView();
+      saveState();
     }
 
     document.querySelectorAll('.card-done-btn').forEach(btn => {
@@ -233,6 +244,32 @@
       });
     });
 
+    // Restore persisted state before first render
+    (function restoreState() {
+      try {
+        const s = JSON.parse(localStorage.getItem(LS) || '{}');
+        if (s.showRead) {
+          showingRead = true;
+          document.getElementById('view-toggle-btn').textContent = 'Show unread';
+        }
+        if (s.sender !== undefined) {
+          const match = document.querySelector(`.filter-btn[data-sender="${CSS.escape(s.sender)}"]`);
+          if (match) {
+            document.querySelectorAll('.filter-btn[data-sender]').forEach(b => b.classList.remove('active'));
+            match.classList.add('active');
+          }
+        }
+        if (s.length !== undefined) {
+          const match = document.querySelector(`.length-btn[data-length="${CSS.escape(s.length)}"]`);
+          if (match) {
+            document.querySelectorAll('.length-btn').forEach(b => b.classList.remove('active'));
+            match.classList.add('active');
+          }
+        }
+        if (s.sort) setSort(s.sort);
+      } catch (e) {}
+    })();
+
     applyView();
 
     async function doRefresh() {
@@ -248,6 +285,7 @@
         document.querySelectorAll('.filter-btn[data-sender]').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         applyView();
+        saveState();
       });
     });
 
@@ -256,6 +294,7 @@
         document.querySelectorAll('.length-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         applyView();
+        saveState();
       });
     });
 
@@ -278,7 +317,31 @@
         return Number(b.dataset.ts) - Number(a.dataset.ts); // newest
       });
       items.forEach(item => list.appendChild(item));
+      saveState();
     }
+  </script>
+  <script>
+    document.querySelectorAll('.score-badge').forEach(badge => {
+      badge.addEventListener('mouseenter', () => {
+        const tip = badge.querySelector('.score-tip');
+        if (!tip) return;
+        // reset before measuring
+        tip.style.left = '';
+        tip.style.transform = '';
+        tip.style.right = '';
+        const r = tip.getBoundingClientRect();
+        const vw = document.documentElement.clientWidth;
+        const margin = 8;
+        if (r.left < margin) {
+          tip.style.left = '0';
+          tip.style.transform = 'translateX(0)';
+        } else if (r.right > vw - margin) {
+          tip.style.left = 'auto';
+          tip.style.right = '0';
+          tip.style.transform = 'none';
+        }
+      });
+    });
   </script>
 </body>
 </html>

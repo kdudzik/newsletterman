@@ -285,6 +285,29 @@ async def refresh():
     return {"count": len(newsletters)}
 
 
+@app.post("/rescore")
+async def rescore():
+    import json as _json
+
+    async def _clear_and_rescore():
+        cache_dir = Path(__file__).parent / ".newsletter_cache"
+        if not cache_dir.exists():
+            return
+        for f in cache_dir.glob("*.json"):
+            try:
+                entry = _json.loads(f.read_text())
+            except Exception:
+                continue
+            if entry.get("summary"):
+                for k in ("relevance_score", "relevance_note", "challenge_score", "challenge_note"):
+                    entry.pop(k, None)
+                f.write_text(_json.dumps(entry, ensure_ascii=False, indent=2))
+        await _ensure_scores()
+
+    asyncio.create_task(_clear_and_rescore())
+    return {"status": "rescoring in background"}
+
+
 @app.get("/newsletter/{message_id}", response_class=HTMLResponse)
 async def newsletter_detail(request: Request, message_id: str):
     data = get_newsletter_body(message_id, _gmail_service)
