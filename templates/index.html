@@ -30,6 +30,10 @@
         <button id="refresh-btn" class="sort-btn" onclick="doRefresh()">Refresh</button>
       </div>
     </div>
+    <div id="wyborcza-warning" style="margin-top:12px;padding:10px 12px;border:1px solid #e0b4b4;border-radius:10px;background:#fff3f3;color:#8a1f1f;font:500 0.95rem/1.4 system-ui, sans-serif;{{ '' if (wyborcza_enabled and wyborcza_error) else 'display:none;' }}">
+      Wyborcza Schowek sync is not working.
+      <span id="wyborcza-warning-text" style="font-weight:400;">{{ wyborcza_error }}</span>
+    </div>
     {% if newsletters %}
     <div class="filter-bar" id="filter-bar">
       <div class="filter-row">
@@ -58,11 +62,12 @@
           <button class="filter-btn length-btn" data-length="medium">Medium <span class="length-range">8–14m</span> <span class="pill-count">0</span></button>
           <button class="filter-btn length-btn" data-length="long">Long <span class="length-range">15m+</span> <span class="pill-count">0</span></button>
         </div>
-        {% if has_raindrop %}
+        {% if has_raindrop or has_wyborcza %}
         <div class="filter-group">
           <button class="filter-btn source-btn active" data-source="">All sources</button>
           <button class="filter-btn source-btn" data-source="gmail">Newsletters <span class="pill-count">0</span></button>
-          <button class="filter-btn source-btn" data-source="raindrop">Articles <span class="pill-count">0</span></button>
+          {% if has_raindrop %}<button class="filter-btn source-btn" data-source="raindrop">Raindrop <span class="pill-count">0</span></button>{% endif %}
+          {% if has_wyborcza %}<button class="filter-btn source-btn" data-source="wyborcza">Wyborcza <span class="pill-count">0</span></button>{% endif %}
         </div>
         {% endif %}
         {% if newsletters | selectattr('lean', 'defined') | list | length %}
@@ -84,19 +89,20 @@
     {% else %}
     <ul class="newsletter-list" id="newsletter-list">
       {% for n in newsletters %}
-      {% set is_raindrop = n.get('source') == 'raindrop' %}
-      <li class="newsletter-item" data-sender="{{ n.from | sender_name }}" data-ts="{{ n.date | date_ts }}" data-read="{{ 'true' if n.read else 'false' }}" data-mins="{{ n.word_count | read_time_minutes }}" data-relevance="{{ n.relevance_score if 'relevance_score' in n else '' }}" data-challenge="{{ n.challenge_score if 'challenge_score' in n else '' }}" data-lean="{{ n.lean if 'lean' in n else '' }}" data-source="{{ n.source if 'source' in n else 'gmail' }}">
+      {% set is_article = n.get('source') in ['raindrop', 'wyborcza'] %}
+      {% set _has_scores = ('relevance_score' in n or 'lean' in n) %}
+      <li class="newsletter-item" data-id="{{ n.id }}" data-sender="{{ n.from | sender_name }}" data-ts="{{ n.date | date_ts }}" data-read="{{ 'true' if n.read else 'false' }}" data-mins="{{ n.word_count | read_time_minutes }}" data-relevance="{{ n.relevance_score if 'relevance_score' in n else '' }}" data-challenge="{{ n.challenge_score if 'challenge_score' in n else '' }}" data-lean="{{ n.lean if 'lean' in n else '' }}" data-source="{{ n.source if 'source' in n else 'gmail' }}" data-pending="{{ 'true' if (not n.summary or not _has_scores) else 'false' }}">
         <div class="card">
           <div class="card-link">
-            {% if is_raindrop %}
-            <a class="subject gmail-link" href="{{ n.url }}" target="_blank" rel="noopener" title="Open article">{{ n.subject | unescape }}<svg class="ext-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="11" height="11"><path fill-rule="evenodd" d="M4.75 2a.75.75 0 0 0 0 1.5h5.44L2.97 10.72a.75.75 0 1 0 1.06 1.06L11.25 4.56v5.44a.75.75 0 0 0 1.5 0V2.75A.75.75 0 0 0 12 2H4.75Z" clip-rule="evenodd"/></svg></a>
+            {% if is_article %}
+            <a class="subject gmail-link js-subject" href="{{ n.url }}" target="_blank" rel="noopener" title="Open article">{{ n.subject | unescape }}<svg class="ext-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="11" height="11"><path fill-rule="evenodd" d="M4.75 2a.75.75 0 0 0 0 1.5h5.44L2.97 10.72a.75.75 0 1 0 1.06 1.06L11.25 4.56v5.44a.75.75 0 0 0 1.5 0V2.75A.75.75 0 0 0 12 2H4.75Z" clip-rule="evenodd"/></svg></a>
             {% else %}
             <a class="subject gmail-link" href="https://mail.google.com/mail/u/0/#all/{{ n.id }}" target="_blank" rel="noopener" title="View in Gmail">{{ n.subject | unescape }}<svg class="ext-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="11" height="11"><path fill-rule="evenodd" d="M4.75 2a.75.75 0 0 0 0 1.5h5.44L2.97 10.72a.75.75 0 1 0 1.06 1.06L11.25 4.56v5.44a.75.75 0 0 0 1.5 0V2.75A.75.75 0 0 0 12 2H4.75Z" clip-rule="evenodd"/></svg></a>
             {% endif %}
-            <span class="meta">{% if is_raindrop %}<span class="source-badge" title="Saved article">🔖</span> {% endif %}{{ n.from | sender_name }} · {{ n.date | relative_date }}{% if n.word_count %} · <span class="read-time read-time-{{ 'long' if (n.word_count | read_time_minutes) >= 15 else ('medium' if (n.word_count | read_time_minutes) >= 8 else 'short') }}">{{ n.word_count | read_time }}</span>{% endif %}{% if 'relevance_score' in n or 'lean' in n %} · <span class="score-badges">{% if 'relevance_score' in n %}<span class="score-badge relevance-{{ 'high' if n.relevance_score >= 7 else ('mid' if n.relevance_score >= 4 else 'low') }}">↑ {{ n.relevance_score }}<span class="score-tip">{{ n.relevance_note }}</span></span><span class="score-badge challenge-{{ 'high' if n.challenge_score >= 7 else ('mid' if n.challenge_score >= 4 else 'low') }}">⚡ {{ n.challenge_score }}<span class="score-tip">{{ n.challenge_note }}</span></span>{% endif %}{% if 'lean' in n %}<span class="score-badge lean-{{ n.lean | lower }}">{{ n.lean }}<span class="score-tip">{{ n.lean_note }}</span></span>{% endif %}</span>{% endif %}</span>
-            {% if n.summary %}<div class="snippet summary-snippet">{{ n.summary | markdown_summary }}</div>{% else %}<span class="snippet">{{ n.snippet | unescape }}</span>{% endif %}
+            <span class="meta">{% if is_article %}<span class="source-badge" title="Saved article">🔖</span> {% endif %}{{ n.from | sender_name }} · {{ n.date | relative_date }}{% if n.word_count %} · <span class="read-time read-time-{{ 'long' if (n.word_count | read_time_minutes) >= 15 else ('medium' if (n.word_count | read_time_minutes) >= 8 else 'short') }}">{{ n.word_count | read_time }}</span>{% endif %}<span class="js-scores">{% if 'relevance_score' in n or 'lean' in n %} · <span class="score-badges">{% if 'relevance_score' in n %}<span class="score-badge relevance-{{ 'high' if n.relevance_score >= 7 else ('mid' if n.relevance_score >= 4 else 'low') }}">↑ {{ n.relevance_score }}<span class="score-tip">{{ n.relevance_note }}</span></span><span class="score-badge challenge-{{ 'high' if n.challenge_score >= 7 else ('mid' if n.challenge_score >= 4 else 'low') }}">⚡ {{ n.challenge_score }}<span class="score-tip">{{ n.challenge_note }}</span></span>{% endif %}{% if 'lean' in n %}<span class="score-badge lean-{{ n.lean | lower }}">{{ n.lean }}<span class="score-tip">{{ n.lean_note }}</span></span>{% endif %}</span>{% elif n.summary %} · <span class="score-badges-loading"><span></span><span></span><span></span></span>{% endif %}</span></span>
+            {% if n.summary %}<div class="snippet summary-snippet js-summary">{{ n.summary | markdown_summary }}</div>{% else %}<div class="snippet-loading js-summary" aria-label="Loading summary"><span></span><span></span><span></span></div>{% endif %}
           </div>
-          {% if is_raindrop %}
+          {% if is_article %}
           <a class="card-open-panel" href="{{ n.url }}" target="_blank" rel="noopener">Open <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path fill-rule="evenodd" d="M4.75 2a.75.75 0 0 0 0 1.5h5.44L2.97 10.72a.75.75 0 1 0 1.06 1.06L11.25 4.56v5.44a.75.75 0 0 0 1.5 0V2.75A.75.75 0 0 0 12 2H4.75Z" clip-rule="evenodd"/></svg></a>
           {% else %}
           <a class="card-open-panel" href="/newsletter/{{ n.id }}">Open <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path fill-rule="evenodd" d="M8 1a.75.75 0 0 1 .75.75v6.19l1.97-1.97a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.03a.75.75 0 0 1 1.06-1.06l1.97 1.97V1.75A.75.75 0 0 1 8 1ZM1.5 13.25a.75.75 0 0 1 .75-.75h11.5a.75.75 0 0 1 0 1.5H2.25a.75.75 0 0 1-.75-.75Z" clip-rule="evenodd"/></svg></a>
@@ -239,7 +245,7 @@
           : '';
 
         // In "All sources" mode: hide article sender pills with only 1 item
-        const hideLowVolumeArticle = !activeSource && senderSource === 'raindrop' && count <= 1;
+        const hideLowVolumeArticle = !activeSource && senderSource !== 'gmail' && count <= 1;
         const hide = (count === 0 && sender) || hideLowVolumeArticle;
         btn.style.display = hide ? 'none' : '';
         if (hide && btn.classList.contains('active') && sender) {
@@ -308,23 +314,37 @@
     }
 
     function doneUrl(id, source) {
-      return source === 'raindrop' ? `/article/${id}/done` : `/newsletter/${id}/done`;
+      return source === 'gmail' ? `/newsletter/${id}/done` : `/article/${id}/done`;
     }
     function unreadUrl(id, source) {
-      return source === 'raindrop' ? `/article/${id}/unread` : `/newsletter/${id}/unread`;
+      return source === 'gmail' ? `/newsletter/${id}/unread` : `/article/${id}/unread`;
+    }
+
+    function setLoading(btn, on) {
+      btn.classList.toggle('is-loading', on);
+      btn.disabled = on;
+    }
+    function flashError(btn) {
+      btn.classList.remove('is-loading');
+      btn.classList.add('is-error');
+      btn.disabled = false;
+      setTimeout(() => btn.classList.remove('is-error'), 1800);
     }
 
     document.querySelectorAll('.card-done-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
         const source = btn.dataset.source || 'gmail';
-        btn.disabled = true;
-        await fetch(doneUrl(id, source), { method: 'POST' });
+        setLoading(btn, true);
+        let resp;
+        try { resp = await fetch(doneUrl(id, source), { method: 'POST' }); }
+        catch { flashError(btn); return; }
+        if (!resp.ok) { flashError(btn); return; }
+        setLoading(btn, false);
         const item = btn.closest('.newsletter-item');
         item.dataset.read = 'true';
         btn.style.display = 'none';
         item.querySelector('.card-unread-btn').style.display = '';
-        btn.disabled = false;
         applyView();
       });
     });
@@ -333,13 +353,16 @@
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
         const source = btn.dataset.source || 'gmail';
-        btn.disabled = true;
-        await fetch(unreadUrl(id, source), { method: 'POST' });
+        setLoading(btn, true);
+        let resp;
+        try { resp = await fetch(unreadUrl(id, source), { method: 'POST' }); }
+        catch { flashError(btn); return; }
+        if (!resp.ok) { flashError(btn); return; }
+        setLoading(btn, false);
         const item = btn.closest('.newsletter-item');
         item.dataset.read = 'false';
         btn.style.display = 'none';
         item.querySelector('.card-done-btn').style.display = '';
-        btn.disabled = false;
         applyView();
       });
     });
@@ -386,12 +409,37 @@
 
     applyView();
 
+    function setWyborczaWarning(error) {
+      const warning = document.getElementById('wyborcza-warning');
+      const text = document.getElementById('wyborcza-warning-text');
+      if (!warning || !text) return;
+      if (error) {
+        text.textContent = error;
+        warning.style.display = '';
+      } else {
+        text.textContent = '';
+        warning.style.display = 'none';
+      }
+    }
+
     async function doRefresh() {
       const btn = document.getElementById('refresh-btn');
       btn.disabled = true;
       btn.textContent = 'Refreshing…';
-      await fetch('/refresh', { method: 'POST' });
-      location.reload();
+      try {
+        const resp = await fetch('/refresh', { method: 'POST' });
+        const data = await resp.json();
+        const error = data.wyborcza_error || '';
+        setWyborczaWarning(error);
+        if (!error) {
+          location.reload();
+          return;
+        }
+      } catch (err) {
+        setWyborczaWarning('Refresh failed before Wyborcza sync status could be checked.');
+      }
+      btn.disabled = false;
+      btn.textContent = 'Refresh';
     }
 
     document.querySelectorAll('.filter-btn[data-sender]').forEach(btn => {
@@ -466,6 +514,105 @@
       items.forEach(item => list.appendChild(item));
       saveState();
     }
+  </script>
+  <script>
+    (function pollPending() {
+      const pendingItems = () => Array.from(document.querySelectorAll('.newsletter-item[data-pending="true"]'));
+
+      function wireTooltips(root) {
+        root.querySelectorAll('.score-badge').forEach(badge => {
+          badge.addEventListener('mouseenter', () => {
+            const tip = badge.querySelector('.score-tip');
+            if (!tip) return;
+            tip.style.left = ''; tip.style.transform = ''; tip.style.right = '';
+            const r = tip.getBoundingClientRect();
+            const vw = document.documentElement.clientWidth;
+            const margin = 8;
+            if (r.left < margin) { tip.style.left = '0'; tip.style.transform = 'translateX(0)'; }
+            else if (r.right > vw - margin) { tip.style.left = 'auto'; tip.style.right = '0'; tip.style.transform = 'none'; }
+          });
+        });
+      }
+
+      function applyEntry(item, data) {
+        let resolved = true;
+
+        // Update title (e.g. Reddit subject fetched at body-fetch time)
+        if (data.subject) {
+          const subjectEl = item.querySelector('.js-subject');
+          if (subjectEl) {
+            // Replace text nodes only, leaving child SVG intact
+            for (const node of Array.from(subjectEl.childNodes)) {
+              if (node.nodeType === Node.TEXT_NODE) { node.textContent = data.subject; break; }
+            }
+          }
+        }
+
+        // Update summary
+        const summaryEl = item.querySelector('.js-summary');
+        if (summaryEl && data.summary_html) {
+          const div = document.createElement('div');
+          div.className = 'snippet summary-snippet js-summary';
+          div.innerHTML = data.summary_html;
+          summaryEl.replaceWith(div);
+        } else if (!data.summary_html) {
+          resolved = false;
+        }
+
+        // Update scores
+        const scoresEl = item.querySelector('.js-scores');
+        if (scoresEl && (data.relevance_html || data.lean_html)) {
+          const parts = [' · <span class="score-badges">'];
+          if (data.relevance_html) parts.push(data.relevance_html);
+          if (data.lean_html) parts.push(data.lean_html);
+          parts.push('</span>');
+          scoresEl.innerHTML = parts.join('');
+          if (data.relevance_score != null) item.dataset.relevance = data.relevance_score;
+          if (data.challenge_score != null) item.dataset.challenge = data.challenge_score;
+          if (data.lean != null) item.dataset.lean = data.lean;
+          wireTooltips(scoresEl);
+        } else if (data.summary_html) {
+          // summary arrived but scores not yet — show skeleton and keep pending
+          if (!scoresEl.querySelector('.score-badges-loading')) {
+            scoresEl.innerHTML = ' · <span class="score-badges-loading"><span></span><span></span><span></span></span>';
+          }
+          resolved = false;
+        }
+
+        if (resolved) item.dataset.pending = 'false';
+      }
+
+      function refreshSubtitle() {
+        updateSubtitle();
+        // Also refresh unread count in tab title
+        const sub = document.getElementById('subtitle');
+        if (sub) document.title = `📬 Newsletter Man — ${sub.textContent}`;
+      }
+
+      async function poll() {
+        const items = pendingItems();
+        if (items.length === 0) return;
+        const ids = items.map(el => el.dataset.id).filter(Boolean).join(',');
+        let resolved = 0;
+        try {
+          const resp = await fetch(`/api/entries/status?ids=${encodeURIComponent(ids)}`);
+          if (!resp.ok) return;
+          const data = await resp.json();
+          items.forEach(item => {
+            const id = item.dataset.id;
+            if (data[id] && Object.keys(data[id]).length > 0) {
+              const wasPending = item.dataset.pending === 'true';
+              applyEntry(item, data[id]);
+              if (wasPending && item.dataset.pending === 'false') resolved++;
+            }
+          });
+        } catch (e) {}
+        if (resolved > 0) refreshSubtitle();
+        if (pendingItems().length > 0) setTimeout(poll, 3000);
+      }
+
+      if (pendingItems().length > 0) setTimeout(poll, 2000);
+    })();
   </script>
   <script>
     document.querySelectorAll('.score-badge').forEach(badge => {

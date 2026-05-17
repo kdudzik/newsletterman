@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 
 from gmail_client import get_service, list_newsletters_cached, sync_newsletters, get_newsletter_body, remove_read_later_label, restore_read_later_label, _load_entry, _save_entry
 import raindrop_client as _raindrop
+import wyborcza_client as _wyborcza
 from summarizer import summarize
 import scorer as _scorer
 try:
@@ -32,23 +33,85 @@ def _context_file() -> str:
 
 _gmail_service = None
 _raindrop_token: str = os.getenv("RAINDROP_TEST_TOKEN", "")
+_wyborcza_schowek_url: str = os.getenv("WYBORCZA_SCHOWEK_URL", "")
+_wyborcza_cookie_file: str = os.getenv("WYBORCZA_COOKIE_FILE", "")
+_wyborcza_status = {
+    "enabled": bool(_wyborcza_schowek_url),
+    "ok": False,
+    "error": "",
+}
+
+
+def _friendly_wyborcza_error(error: str) -> str:
+    if not error:
+        return ""
+
+    cookie_hint = ""
+    if _wyborcza_cookie_file:
+        cookie_hint = f" Re-export your Wyborcza cookies to {_wyborcza_cookie_file} and refresh."
+    else:
+        cookie_hint = " Re-export your Wyborcza cookies and update WYBORCZA_COOKIE_FILE, then refresh."
+
+    lowered = error.lower()
+    if (
+        "401" in error
+        or "403" in error
+        or "cookie" in lowered
+        or "unauthorized" in lowered
+        or "forbidden" in lowered
+        or "verification" in lowered
+    ):
+        return f"Wyborcza auth may have expired.{cookie_hint} Details: {error}".strip()
+
+    return error
 
 
 def _is_raindrop(entry_id: str) -> bool:
     return entry_id.startswith("raindrop-")
 
 
+def _is_wyborcza(entry_id: str) -> bool:
+    return entry_id.startswith("wyborcza-")
+
+
 def _load_any(entry_id: str) -> dict:
     if _is_raindrop(entry_id):
         return _raindrop._load_entry(entry_id)
+    if _is_wyborcza(entry_id):
+        return _wyborcza._load_entry(entry_id)
     return _load_entry(entry_id)
 
 
 def _save_any(entry_id: str, data: dict) -> None:
     if _is_raindrop(entry_id):
         _raindrop._save_entry(entry_id, data)
+    elif _is_wyborcza(entry_id):
+        _wyborcza._save_entry(entry_id, data)
     else:
         _save_entry(entry_id, data)
+
+
+def _set_wyborcza_status(ok: bool, error: str = "") -> None:
+    _wyborcza_status["enabled"] = bool(_wyborcza_schowek_url)
+    _wyborcza_status["ok"] = ok
+    _wyborcza_status["error"] = _friendly_wyborcza_error(error)
+
+
+def _sync_wyborcza() -> list[dict]:
+    if not _wyborcza_schowek_url:
+        _set_wyborcza_status(False, "")
+        return []
+    if not _wyborcza_cookie_file:
+        _set_wyborcza_status(False, "Wyborcza Schowek is configured without any cookie export.")
+        return []
+    try:
+        items = _wyborcza.sync_articles(_wyborcza_schowek_url, _wyborcza_cookie_file)
+        _set_wyborcza_status(True, "")
+        return items
+    except Exception as e:
+        _set_wyborcza_status(False, str(e))
+        print(f"[wyborcza] sync failed: {e}")
+        return []
 
 
 def _score_entry(entry_id: str) -> None:
@@ -87,6 +150,8 @@ def _summarize_entry(entry_id: str, service) -> None:
             return
         if _is_raindrop(entry_id):
             body = _raindrop.get_article_body(entry_id)
+        elif _is_wyborcza(entry_id):
+            body = _wyborcza.get_article_body(entry_id, _wyborcza_cookie_file)
         else:
             data = get_newsletter_body(entry_id, service)
             body = data.get("body", "")
@@ -94,7 +159,7 @@ def _summarize_entry(entry_id: str, service) -> None:
             return
         cached = _load_any(entry_id)
         subject = cached.get("subject", "")
-        summary = summarize(body, subject, is_article=_is_raindrop(entry_id))
+        summary = summarize(body, subject, is_article=_is_raindrop(entry_id) or _is_wyborcza(entry_id))
         cached["summary"] = summary
         _save_any(entry_id, cached)
         print(f"[summarize] done: {entry_id}")
@@ -109,6 +174,7 @@ def _all_cache_files():
     for cache_dir in (
         Path(__file__).parent / ".newsletter_cache",
         Path(__file__).parent / ".raindrop_cache",
+        Path(__file__).parent / ".wyborcza_cache",
     ):
         if not cache_dir.exists():
             continue
@@ -156,6 +222,8 @@ async def _bg_sync():
             sync_newsletters(_gmail_service)
             if _raindrop_token:
                 _raindrop.sync_articles(_raindrop_token)
+            if _wyborcza_schowek_url:
+                _sync_wyborcza()
             await _ensure_summaries()
             await _ensure_scores()
         except Exception as e:
@@ -171,6 +239,10 @@ async def lifespan(app: FastAPI):
             _raindrop.sync_articles(_raindrop_token)
         except Exception as e:
             print(f"[raindrop] startup sync failed: {e}")
+    if _wyborcza_schowek_url:
+        _sync_wyborcza()
+    else:
+        _set_wyborcza_status(False, "")
     asyncio.create_task(_bg_sync())
     asyncio.create_task(_ensure_summaries())
     asyncio.create_task(_ensure_scores())
@@ -193,7 +265,10 @@ def _relative_date(date_str: str) -> str:
             return "just now"
         if days == 0:
             hours = diff.seconds // 3600
-            return "just now" if hours == 0 else f"{hours}h ago"
+            minutes = diff.seconds // 60
+            if hours == 0:
+                return "just now" if minutes == 0 else f"{minutes}min ago"
+            return f"{hours}h ago"
         if days == 1:
             return "yesterday"
         if days < 7:
@@ -312,23 +387,32 @@ templates.env.filters["read_time_minutes"] = _read_time_minutes
 async def index(request: Request):
     from email.utils import parsedate_to_datetime
     newsletters = list_newsletters_cached()
+    wyborcza_articles = []
     if _raindrop_token:
         articles = _raindrop.list_articles_cached()
-        all_entries = newsletters + articles
-        def _ts(e):
-            try:
-                return parsedate_to_datetime(e.get("date", "")).timestamp()
-            except Exception:
-                return 0.0
-        all_entries.sort(key=_ts, reverse=True)
     else:
-        all_entries = newsletters
+        articles = []
+    if _wyborcza_schowek_url:
+        wyborcza_articles = _wyborcza.list_articles_cached()
+
+    all_entries = newsletters + articles + wyborcza_articles
+    def _ts(e):
+        try:
+            return parsedate_to_datetime(e.get("date", "")).timestamp()
+        except Exception:
+            return 0.0
+    all_entries.sort(key=_ts, reverse=True)
+
     has_raindrop = bool(_raindrop_token) and any(e.get("source") == "raindrop" for e in all_entries)
+    has_wyborcza = bool(_wyborcza_schowek_url) and any(e.get("source") == "wyborcza" for e in all_entries)
     return templates.TemplateResponse("index.html", {
         "request": request,
         "newsletters": all_entries,
         "has_personal_context": bool(_context_file()),
         "has_raindrop": has_raindrop,
+        "has_wyborcza": has_wyborcza,
+        "wyborcza_enabled": _wyborcza_status["enabled"],
+        "wyborcza_error": _wyborcza_status["error"],
     })
 
 
@@ -339,9 +423,13 @@ async def refresh():
         articles = _raindrop.sync_articles(_raindrop_token)
     else:
         articles = []
+    wyborcza_articles = _sync_wyborcza() if _wyborcza_schowek_url else []
     asyncio.create_task(_ensure_summaries())
     asyncio.create_task(_ensure_scores())
-    return {"count": len(newsletters) + len(articles)}
+    return {
+        "count": len(newsletters) + len(articles) + len(wyborcza_articles),
+        "wyborcza_error": _wyborcza_status["error"],
+    }
 
 
 @app.post("/rescore")
@@ -410,10 +498,27 @@ async def mark_unread(message_id: str):
 
 @app.post("/article/{article_id}/done")
 async def article_done(article_id: str):
-    if not _raindrop_token:
-        raise HTTPException(status_code=503, detail="Raindrop not configured")
     loop = asyncio.get_event_loop()
-    ok = await loop.run_in_executor(None, _raindrop.move_to_archive, article_id, _raindrop_token)
+    if _is_raindrop(article_id):
+        if not _raindrop_token:
+            raise HTTPException(status_code=503, detail="Raindrop not configured")
+        ok = await loop.run_in_executor(None, _raindrop.move_to_archive, article_id, _raindrop_token)
+    elif _is_wyborcza(article_id):
+        if not _wyborcza_cookie_file:
+            raise HTTPException(status_code=503, detail="Wyborcza auth not configured")
+        try:
+            ok = await loop.run_in_executor(
+                None,
+                _wyborcza.remove_from_schowek,
+                article_id,
+                _wyborcza_schowek_url,
+                _wyborcza_cookie_file,
+            )
+        except Exception as e:
+            _set_wyborcza_status(False, str(e))
+            raise HTTPException(status_code=502, detail="Wyborcza Schowek remove failed")
+    else:
+        raise HTTPException(status_code=404, detail="Article not found")
     if not ok:
         raise HTTPException(status_code=404, detail="Article not found or move failed")
     return {"ok": True}
@@ -421,10 +526,63 @@ async def article_done(article_id: str):
 
 @app.post("/article/{article_id}/unread")
 async def article_unread(article_id: str):
-    ok = _raindrop.mark_unread_local(article_id)
+    if _is_raindrop(article_id):
+        ok = _raindrop.mark_unread_local(article_id)
+    elif _is_wyborcza(article_id):
+        if not _wyborcza_cookie_file:
+            raise HTTPException(status_code=503, detail="Wyborcza auth not configured")
+        loop = asyncio.get_event_loop()
+        try:
+            ok = await loop.run_in_executor(
+                None,
+                _wyborcza.add_to_schowek,
+                article_id,
+                _wyborcza_schowek_url,
+                _wyborcza_cookie_file,
+            )
+        except Exception as e:
+            _set_wyborcza_status(False, str(e))
+            raise HTTPException(status_code=502, detail="Wyborcza Schowek add failed")
+    else:
+        raise HTTPException(status_code=404, detail="Article not found")
     if not ok:
         raise HTTPException(status_code=404, detail="Article not found")
     return {"ok": True}
+
+
+@app.get("/api/entries/status")
+async def entries_status(ids: str):
+    from markupsafe import Markup
+    result = {}
+    for entry_id in ids.split(","):
+        entry_id = entry_id.strip()
+        if not entry_id:
+            continue
+        try:
+            cached = _load_any(entry_id)
+        except Exception:
+            continue
+        summary = cached.get("summary", "")
+        scores: dict = {"subject": cached.get("subject", "")}
+        if summary:
+            scores["summary_html"] = str(_markdown_summary(summary))
+            if cached.get("relevance_score") is not None:
+                rs = cached["relevance_score"]
+                cs = cached.get("challenge_score", 0)
+                rn = cached.get("relevance_note", "")
+                cn = cached.get("challenge_note", "")
+                rl = "high" if rs >= 7 else ("mid" if rs >= 4 else "low")
+                cl = "high" if cs >= 7 else ("mid" if cs >= 4 else "low")
+                scores["relevance_score"] = rs
+                scores["challenge_score"] = cs
+                scores["relevance_html"] = f'<span class="score-badge relevance-{rl}">↑ {rs}<span class="score-tip">{_safe_escape(rn)}</span></span><span class="score-badge challenge-{cl}">⚡ {cs}<span class="score-tip">{_safe_escape(cn)}</span></span>'
+            if cached.get("lean") is not None:
+                lean = cached["lean"]
+                lean_note = cached.get("lean_note", "")
+                scores["lean"] = lean
+                scores["lean_html"] = f'<span class="score-badge lean-{lean.lower()}">{lean}<span class="score-tip">{_safe_escape(lean_note)}</span></span>'
+        result[entry_id] = scores
+    return result
 
 
 if __name__ == "__main__":

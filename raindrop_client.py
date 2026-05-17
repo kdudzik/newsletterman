@@ -4,6 +4,7 @@ import re
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import threading
 
@@ -23,6 +24,15 @@ def _extract_text(html: str, url: str = "") -> str:
 _CACHE_DIR = Path(__file__).parent / ".raindrop_cache"
 _API_BASE = "https://api.raindrop.io/rest/v1"
 _UNSORTED_ID = -1
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+)
+_REDDIT_JSON_UA = "newsletterman/1.0 (+local raindrop sync)"
+_BAD_REDDIT_BODIES = {
+    "Reddit - Please wait for verification",
+    "Please wait for verification",
+}
 
 
 def _cache_file(article_id: str) -> Path:
@@ -63,6 +73,100 @@ def _parse_ts(rfc_date: str) -> float:
 
 def _headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _is_reddit_url(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return host.endswith("reddit.com") or host.endswith("redd.it")
+
+
+def _looks_like_bad_reddit_cache(body: str) -> bool:
+    cleaned = " ".join((body or "").split())
+    return cleaned in _BAD_REDDIT_BODIES
+
+
+def _reddit_json_url(url: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if host.endswith("redd.it"):
+        path = parsed.path.rstrip("/")
+        return f"https://www.reddit.com{path}.json?raw_json=1&limit=500"
+    path = parsed.path.rstrip("/")
+    if not path.endswith(".json"):
+        path = f"{path}.json"
+    return f"https://www.reddit.com{path}?raw_json=1&limit=500"
+
+
+def _reddit_comment_lines(children: list[dict], depth: int = 0, max_comments: int = 40) -> list[str]:
+    lines: list[str] = []
+    for child in children:
+        if len(lines) >= max_comments:
+            break
+        if child.get("kind") != "t1":
+            continue
+        data = child.get("data") or {}
+        body = (data.get("body") or "").strip()
+        if not body or body in {"[deleted]", "[removed]"}:
+            continue
+        author = data.get("author") or "[unknown]"
+        prefix = "  " * depth
+        lines.append(f"{prefix}{author}: {body}")
+        replies = data.get("replies")
+        if isinstance(replies, dict):
+            reply_children = ((replies.get("data") or {}).get("children")) or []
+            if reply_children and len(lines) < max_comments:
+                remaining = max_comments - len(lines)
+                lines.extend(_reddit_comment_lines(reply_children, depth + 1, remaining))
+    return lines
+
+
+def _extract_reddit_thread(url: str) -> dict | None:
+    try:
+        resp = requests.get(
+            _reddit_json_url(url),
+            headers={"User-Agent": _REDDIT_JSON_UA},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception:
+        return None
+
+    if not isinstance(payload, list) or len(payload) < 2:
+        return None
+
+    post_children = (((payload[0] or {}).get("data") or {}).get("children")) or []
+    if not post_children:
+        return None
+
+    post = (post_children[0] or {}).get("data") or {}
+    title = (post.get("title") or "").strip()
+    selftext = (post.get("selftext") or "").strip()
+    subreddit = post.get("subreddit_name_prefixed") or post.get("subreddit")
+    author = post.get("author") or "[unknown]"
+
+    parts = []
+    if title:
+        parts.append(title)
+    meta = " | ".join(p for p in [subreddit, f"u/{author}" if author else ""] if p)
+    if meta:
+        parts.append(meta)
+    if selftext:
+        parts.append(selftext)
+
+    comment_children = (((payload[1] or {}).get("data") or {}).get("children")) or []
+    comment_lines = _reddit_comment_lines(comment_children)
+    if comment_lines:
+        parts.append("Comments:")
+        parts.extend(comment_lines)
+
+    body = "\n\n".join(part for part in parts if part).strip()
+    snippet = selftext or (comment_lines[0] if comment_lines else "")
+    return {
+        "subject": title,
+        "snippet": snippet[:400],
+        "body": body,
+    }
 
 
 def list_articles_cached() -> list[dict]:
@@ -148,17 +252,32 @@ def _prefetch_word_counts(article_ids: list[str]) -> None:
 def get_article_body(article_id: str) -> str:
     """Fetch full article text from the article URL, cache it."""
     cached = _load_entry(article_id)
-    if "body" in cached:
+    url = cached.get("url", "")
+    is_reddit = _is_reddit_url(url)
+
+    if "body" in cached and not (is_reddit and _looks_like_bad_reddit_cache(cached["body"])):
         return cached["body"]
 
-    url = cached.get("url", "")
     if not url:
         return ""
+
+    if is_reddit:
+        reddit = _extract_reddit_thread(url)
+        body = (reddit or {}).get("body", "")
+        cached["body"] = body
+        cached["word_count"] = len(body.split())
+        if reddit:
+            if reddit.get("subject"):
+                cached["subject"] = reddit["subject"]
+            if reddit.get("snippet"):
+                cached["snippet"] = reddit["snippet"]
+        _save_entry(article_id, cached)
+        return body
 
     try:
         resp = requests.get(
             url,
-            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+            headers={"User-Agent": _BROWSER_UA},
             timeout=20,
             allow_redirects=True,
         )

@@ -152,9 +152,25 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
   top: .4rem;
   right: .4rem;
   opacity: 0;
-  transition: opacity .15s;
+  transition: opacity .15s, color .15s, background .15s;
 }
 .card:hover .card-corner-btn { opacity: 1; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.card-icon-btn.is-loading {
+  opacity: 1;
+  cursor: default;
+  pointer-events: none;
+  color: var(--muted);
+}
+.card-icon-btn.is-loading svg { animation: spin .7s linear infinite; }
+
+.card-icon-btn.is-error {
+  opacity: 1;
+  color: #dc2626;
+  background: #fee2e2;
+}
 
 .card-open-panel {
   display: flex;
@@ -236,6 +252,28 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
 .summary-snippet li + li {
   margin-top: .35rem;
 }
+
+@keyframes shimmer {
+  0%   { opacity: .45; }
+  50%  { opacity: .15; }
+  100% { opacity: .45; }
+}
+.snippet-loading {
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+  margin-top: .35rem;
+}
+.snippet-loading span {
+  display: block;
+  height: .75rem;
+  border-radius: 4px;
+  background: var(--muted);
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+.snippet-loading span:nth-child(1) { width: 92%; }
+.snippet-loading span:nth-child(2) { width: 78%; }
+.snippet-loading span:nth-child(3) { width: 55%; }
 
 .body-text { margin-top: 1.5rem; }
 .body-text pre {
@@ -356,6 +394,21 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
 .sort-group .sort-btn.active { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
 
 .score-badges { display: inline-flex; gap: .25rem; vertical-align: middle; }
+.score-badges-loading {
+  display: inline-flex;
+  gap: .25rem;
+  vertical-align: middle;
+}
+.score-badges-loading span {
+  display: inline-block;
+  width: 2.2rem;
+  height: 1.1rem;
+  border-radius: 99px;
+  background: var(--muted);
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+.score-badges-loading span:nth-child(2) { width: 2.8rem; animation-delay: .2s; }
+.score-badges-loading span:nth-child(3) { width: 1.8rem; animation-delay: .4s; }
 .score-badge {
   position: relative;
   display: inline-block;

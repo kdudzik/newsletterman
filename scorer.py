@@ -3,8 +3,9 @@ import os
 from openai import OpenAI
 
 _LEAN_PROMPT = """\
-You are a political media analyst. Given a newsletter summary, classify its political lean \
-based solely on the content and framing — not the reader's views.
+You are a political media analyst. Given a summary of a reading item such as a newsletter \
+or article, classify its political lean based solely on the content and framing — not the \
+reader's views.
 
 Use this scale:
 - XL: Extreme Left
@@ -13,9 +14,11 @@ Use this scale:
 - R:  Right / Centre-Right
 - XR: Extreme Right
 
-Most newsletters (tech, science, finance, lifestyle) are C. Reserve L/R for content with \
+Most reading items (tech, science, finance, lifestyle) are C. Reserve L/R for content with \
 clear ideological framing or advocacy. Reserve XL/XR only for explicitly partisan or \
 extremist content.
+
+Write the lean_note in the SAME LANGUAGE as the summary.
 
 Return ONLY valid JSON, no other text:
 {"lean": "<XL|L|C|R|XR>", "lean_note": "<one sentence explaining the classification>"}\
@@ -41,8 +44,8 @@ def _load_context(path: str) -> str:
 
 _SYSTEM_PROMPT = """\
 You are a personal reading advisor. You will be given a description of a reader's values, \
-worldview, and life priorities, followed by a newsletter summary. Score the newsletter on \
-two dimensions:
+worldview, and life priorities, followed by a summary of a reading item such as a \
+newsletter or article. Score the item on two dimensions:
 
 1. RELEVANCE (0–10): How well does this content align with the reader's stated values, \
 interests, and life areas? 10 = directly serves their priorities; 0 = completely irrelevant.
@@ -52,7 +55,7 @@ existing worldview? Consider: does it introduce perspectives they haven't consid
 challenge assumptions implicit in their values, or cover topics outside their usual frame? \
 10 = strongly challenges or expands; 0 = fully confirms what they already believe.
 
-Write both notes in the SAME LANGUAGE as the newsletter summary. Address the reader \
+Write both notes in the SAME LANGUAGE as the item summary. Address the reader \
 directly in second person (e.g. "You" in English, "Ty"/"Twoje" in Polish).
 
 Return ONLY valid JSON in this exact shape, no other text:

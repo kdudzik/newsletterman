@@ -8,6 +8,11 @@ __pycache__/
 .DS_Store
 .newsletter_cache/
 .raindrop_cache/
+.wyborcza_cache/
+wyborcza-cookies.txt
+*.cookies.txt
 com.newsletterman.plist
 config.py
 personal_context.md
+.playwright-mcp/
+.playwright-cli/
