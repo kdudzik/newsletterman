@@ -33,22 +33,28 @@ _gmail_service = None
 
 
 def _score_entry(message_id: str) -> None:
-    """Generate relevance/challenge scores for one newsletter. Blocking."""
+    """Generate relevance/challenge/lean scores for one newsletter. Blocking."""
     ctx = _context_file()
-    if not ctx:
-        return
     try:
         cached = _load_entry(message_id)
-        if cached.get("relevance_score") is not None:
-            return
         summary = cached.get("summary", "")
         if not summary:
             return
-        scores = _scorer.score_newsletter(summary, ctx)
-        if scores:
-            cached.update(scores)
+        changed = False
+        if ctx and cached.get("relevance_score") is None:
+            scores = _scorer.score_newsletter(summary, ctx)
+            if scores:
+                cached.update(scores)
+                changed = True
+                print(f"[score] rel/ch done: {message_id}")
+        if cached.get("lean") is None:
+            lean = _scorer.score_political_lean(summary)
+            if lean:
+                cached.update(lean)
+                changed = True
+                print(f"[score] lean done: {message_id} {lean['lean']}")
+        if changed:
             _save_entry(message_id, cached)
-            print(f"[score] done: {message_id} rel={scores['relevance']} ch={scores['challenge']}")
     except Exception as e:
         print(f"[score] error {message_id}: {e}")
 
@@ -100,8 +106,6 @@ async def _ensure_summaries() -> None:
 async def _ensure_scores() -> None:
     """Background task: score all cached newsletters that have a summary but no scores yet."""
     import json as _json
-    if not _context_file():
-        return
     cache_dir = Path(__file__).parent / ".newsletter_cache"
     if not cache_dir.exists():
         return
@@ -111,7 +115,7 @@ async def _ensure_scores() -> None:
             entry = _json.loads(f.read_text())
         except Exception:
             continue
-        if entry.get("summary") and entry.get("relevance_score") is None:
+        if entry.get("summary") and (entry.get("relevance_score") is None or entry.get("lean") is None):
             await loop.run_in_executor(None, _score_entry, f.stem)
 
 
@@ -299,7 +303,7 @@ async def rescore():
             except Exception:
                 continue
             if entry.get("summary"):
-                for k in ("relevance_score", "relevance_note", "challenge_score", "challenge_note"):
+                for k in ("relevance_score", "relevance_note", "challenge_score", "challenge_note", "lean", "lean_note"):
                     entry.pop(k, None)
                 f.write_text(_json.dumps(entry, ensure_ascii=False, indent=2))
         await _ensure_scores()

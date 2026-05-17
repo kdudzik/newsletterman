@@ -2,6 +2,25 @@ import json
 import os
 from openai import OpenAI
 
+_LEAN_PROMPT = """\
+You are a political media analyst. Given a newsletter summary, classify its political lean \
+based solely on the content and framing — not the reader's views.
+
+Use this scale:
+- XL: Extreme Left
+- L:  Left / Centre-Left
+- C:  Centre / Apolitical / Non-political
+- R:  Right / Centre-Right
+- XR: Extreme Right
+
+Most newsletters (tech, science, finance, lifestyle) are C. Reserve L/R for content with \
+clear ideological framing or advocacy. Reserve XL/XR only for explicitly partisan or \
+extremist content.
+
+Return ONLY valid JSON, no other text:
+{"lean": "<XL|L|C|R|XR>", "lean_note": "<one sentence explaining the classification>"}\
+"""
+
 _client = None
 _context_cache: dict[str, str] = {}
 
@@ -44,6 +63,30 @@ Return ONLY valid JSON in this exact shape, no other text:
   "challenge_note": "<one sentence addressed to the reader explaining what assumption or belief this challenges, or why it doesn't>"
 }\
 """
+
+
+def score_political_lean(summary: str) -> dict:
+    """Returns {lean, lean_note} or {} on failure."""
+    if not summary:
+        return {}
+    try:
+        client = _get_client()
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=100,
+            messages=[
+                {"role": "system", "content": _LEAN_PROMPT},
+                {"role": "user", "content": f"<SUMMARY>\n{summary}\n</SUMMARY>"},
+            ],
+        )
+        raw = response.choices[0].message.content.strip()
+        data = json.loads(raw)
+        lean = str(data["lean"]).upper()
+        if lean not in ("XL", "L", "C", "R", "XR"):
+            return {}
+        return {"lean": lean, "lean_note": str(data.get("lean_note", ""))}
+    except Exception:
+        return {}
 
 
 def score_newsletter(summary: str, context_path: str) -> dict:

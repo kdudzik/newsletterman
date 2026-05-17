@@ -388,3 +388,8 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
 .challenge-high { background: #e5dbff; color: #6741d9; }
 .challenge-mid  { background: #dbe4ff; color: #3b5bdb; }
 .challenge-low  { background: #f1f3f5; color: #868e96; }
+.lean-xl { background: #c92a2a; color: #fff; }
+.lean-l  { background: #ffc9c9; color: #c92a2a; }
+.lean-c  { background: #f1f3f5; color: #868e96; }
+.lean-r  { background: #d0ebff; color: #1971c2; }
+.lean-xr { background: #1971c2; color: #fff; }
