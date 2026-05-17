@@ -286,14 +286,14 @@ def _markdown_summary(text: str) -> str:
 
 
 def _read_time(word_count) -> str:
-    if not word_count:
+    if not word_count or int(word_count) < 100:
         return ""
     minutes = max(1, round(int(word_count) / 200))
     return f"{minutes} min read"
 
 
 def _read_time_minutes(word_count) -> int:
-    if not word_count:
+    if not word_count or int(word_count) < 100:
         return 0
     return max(1, round(int(word_count) / 200))
 

@@ -5,9 +5,20 @@ from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
 
+import threading
+
 import requests
+import trafilatura
 
 from gmail_client import _strip_html
+
+
+def _extract_text(html: str, url: str = "") -> str:
+    """Extract main article text using trafilatura, falling back to regex strip."""
+    text = trafilatura.extract(html, url=url, include_comments=False, include_tables=False)
+    if text and len(text.split()) > 50:
+        return text
+    return _strip_html(html)
 
 _CACHE_DIR = Path(__file__).parent / ".raindrop_cache"
 _API_BASE = "https://api.raindrop.io/rest/v1"
@@ -117,7 +128,21 @@ def sync_articles(token: str) -> list[dict]:
         cached.update(entry)
         _save_entry(article_id, cached)
         articles.append(entry)
+
+    # Kick off background word-count prefetch for any article missing it
+    needs_wc = [a["id"] for a in articles if not a.get("word_count")]
+    if needs_wc:
+        threading.Thread(target=_prefetch_word_counts, args=(needs_wc,), daemon=True).start()
+
     return articles
+
+
+def _prefetch_word_counts(article_ids: list[str]) -> None:
+    for article_id in article_ids:
+        try:
+            get_article_body(article_id)
+        except Exception as e:
+            print(f"[raindrop] prefetch failed for {article_id}: {e}")
 
 
 def get_article_body(article_id: str) -> str:
@@ -133,12 +158,12 @@ def get_article_body(article_id: str) -> str:
     try:
         resp = requests.get(
             url,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; newsletterman/1.0)"},
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
             timeout=20,
             allow_redirects=True,
         )
         resp.raise_for_status()
-        body = _strip_html(resp.text)
+        body = _extract_text(resp.text, url=url)
     except Exception as e:
         print(f"[raindrop] fetch failed for {url}: {e}")
         body = cached.get("snippet", "")

@@ -450,11 +450,14 @@
         }
         if (mode === 'value') {
           // (relevance + challenge) / 2 / sqrt(mins) — rewards high scores, penalises length
-          const scoreA = (a.dataset.relevance !== '' && a.dataset.challenge !== '')
-            ? (Number(a.dataset.relevance) + Number(a.dataset.challenge)) / 2 / Math.sqrt(Math.max(1, Number(a.dataset.mins)))
+          // articles with unknown read time (mins=0) get score -1 and sink to bottom
+          const minsA = Number(a.dataset.mins);
+          const minsB = Number(b.dataset.mins);
+          const scoreA = (a.dataset.relevance !== '' && a.dataset.challenge !== '' && minsA > 0)
+            ? (Number(a.dataset.relevance) + Number(a.dataset.challenge)) / 2 / Math.sqrt(minsA)
             : -1;
-          const scoreB = (b.dataset.relevance !== '' && b.dataset.challenge !== '')
-            ? (Number(b.dataset.relevance) + Number(b.dataset.challenge)) / 2 / Math.sqrt(Math.max(1, Number(b.dataset.mins)))
+          const scoreB = (b.dataset.relevance !== '' && b.dataset.challenge !== '' && minsB > 0)
+            ? (Number(b.dataset.relevance) + Number(b.dataset.challenge)) / 2 / Math.sqrt(minsB)
             : -1;
           return scoreB !== scoreA ? scoreB - scoreA : Number(b.dataset.ts) - Number(a.dataset.ts);
         }
