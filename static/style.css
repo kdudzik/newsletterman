@@ -39,6 +39,25 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
 .back { color: var(--accent); text-decoration: none; font-size: .875rem; display: inline-block; margin-bottom: .75rem; }
 .back:hover { text-decoration: underline; }
 
+#auth-warnings { display: flex; flex-direction: column; gap: .5rem; margin-top: .75rem; }
+.auth-warning {
+  display: flex; align-items: center; gap: .6rem;
+  padding: .55rem .75rem;
+  border: 1px solid #f0b8b8; border-radius: 8px;
+  background: #fff5f5; color: #7a1f1f;
+  font-size: .875rem; line-height: 1.4;
+}
+.auth-warning-label { font-weight: 600; white-space: nowrap; }
+.auth-warning-detail { flex: 1; color: #9a3030; }
+.auth-warning-btn {
+  white-space: nowrap; font-weight: 600; font-size: .8rem;
+  padding: .25rem .6rem; border-radius: 5px;
+  background: #fde8e8; color: #7a1f1f;
+  text-decoration: none; border: 1px solid #f0b8b8;
+  transition: background .15s;
+}
+.auth-warning-btn:hover { background: #fcd0d0; }
+
 .actions { display: flex; gap: .75rem; flex-wrap: wrap; margin-top: 1rem; }
 
 .btn {

@@ -31,9 +31,17 @@
         <button id="refresh-btn" class="sort-btn" onclick="doRefresh()">Refresh</button>
       </div>
     </div>
-    <div id="wyborcza-warning" style="margin-top:12px;padding:10px 12px;border:1px solid #e0b4b4;border-radius:10px;background:#fff3f3;color:#8a1f1f;font:500 0.95rem/1.4 system-ui, sans-serif;{{ '' if (wyborcza_enabled and wyborcza_error) else 'display:none;' }}">
-      Wyborcza Schowek sync is not working.
-      <span id="wyborcza-warning-text" style="font-weight:400;">{{ wyborcza_error }}</span>
+    <div id="auth-warnings">
+      <div id="wyborcza-warning" class="auth-warning" style="{{ '' if (wyborcza_enabled and wyborcza_error) else 'display:none;' }}">
+        <span class="auth-warning-label">Wyborcza</span>
+        <span id="wyborcza-warning-text" class="auth-warning-detail">{{ wyborcza_error }}</span>
+        <a href="https://wyborcza.pl" target="_blank" rel="noopener" class="auth-warning-btn">Log in →</a>
+      </div>
+      <div id="youtube-warning" class="auth-warning" style="{{ '' if (youtube_enabled and youtube_error) else 'display:none;' }}">
+        <span class="auth-warning-label">YouTube</span>
+        <span id="youtube-warning-text" class="auth-warning-detail">{{ youtube_error }}</span>
+        <a href="https://www.youtube.com" target="_blank" rel="noopener" class="auth-warning-btn">Log in →</a>
+      </div>
     </div>
     {% if newsletters %}
     <div class="filter-bar" id="filter-bar">
@@ -433,9 +441,9 @@
 
     applyView();
 
-    function setWyborczaWarning(error) {
-      const warning = document.getElementById('wyborcza-warning');
-      const text = document.getElementById('wyborcza-warning-text');
+    function setAuthWarning(id, error) {
+      const warning = document.getElementById(id + '-warning');
+      const text = document.getElementById(id + '-warning-text');
       if (!warning || !text) return;
       if (error) {
         text.textContent = error;
@@ -453,14 +461,14 @@
       try {
         const resp = await fetch('/refresh', { method: 'POST' });
         const data = await resp.json();
-        const error = data.wyborcza_error || '';
-        setWyborczaWarning(error);
-        if (!error) {
+        setAuthWarning('wyborcza', data.wyborcza_error || '');
+        setAuthWarning('youtube', data.youtube_error || '');
+        if (!data.wyborcza_error && !data.youtube_error) {
           location.reload();
           return;
         }
       } catch (err) {
-        setWyborczaWarning('Refresh failed before Wyborcza sync status could be checked.');
+        setAuthWarning('wyborcza', 'Refresh failed — check server logs.');
       }
       btn.disabled = false;
       btn.textContent = 'Refresh';

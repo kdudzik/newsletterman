@@ -38,27 +38,30 @@ def _context_file() -> str:
     return ""
 
 _gmail_service = None
-_youtube_cookie_file: str = os.getenv("YOUTUBE_COOKIE_FILE", "")
 _youtube_enabled: bool = os.getenv("YOUTUBE_ENABLED", "").lower() in ("1", "true", "yes")
 _raindrop_token: str = os.getenv("RAINDROP_TEST_TOKEN", "")
 _wyborcza_schowek_url: str = os.getenv("WYBORCZA_SCHOWEK_URL", "")
-_wyborcza_cookie_file: str = os.getenv("WYBORCZA_COOKIE_FILE", "")
 _wyborcza_status = {
     "enabled": bool(_wyborcza_schowek_url),
     "ok": False,
     "error": "",
 }
+_youtube_status = {
+    "enabled": _youtube_enabled,
+    "ok": False,
+    "error": "",
+}
+
+
+def _set_youtube_status(ok: bool, error: str = "") -> None:
+    _youtube_status["enabled"] = _youtube_enabled
+    _youtube_status["ok"] = ok
+    _youtube_status["error"] = error
 
 
 def _friendly_wyborcza_error(error: str) -> str:
     if not error:
         return ""
-
-    cookie_hint = ""
-    if _wyborcza_cookie_file:
-        cookie_hint = f" Re-export your Wyborcza cookies to {_wyborcza_cookie_file} and refresh."
-    else:
-        cookie_hint = " Re-export your Wyborcza cookies and update WYBORCZA_COOKIE_FILE, then refresh."
 
     lowered = error.lower()
     if (
@@ -69,7 +72,7 @@ def _friendly_wyborcza_error(error: str) -> str:
         or "forbidden" in lowered
         or "verification" in lowered
     ):
-        return f"Wyborcza auth may have expired.{cookie_hint} Details: {error}".strip()
+        return f"Auth may have expired. Details: {error}".strip()
 
     return error
 
@@ -117,11 +120,8 @@ def _sync_wyborcza() -> list[dict]:
     if not _wyborcza_schowek_url:
         _set_wyborcza_status(False, "")
         return []
-    if not _wyborcza_cookie_file:
-        _set_wyborcza_status(False, "Wyborcza Schowek is configured without any cookie export.")
-        return []
     try:
-        items = _wyborcza.sync_articles(_wyborcza_schowek_url, _wyborcza_cookie_file)
+        items = _wyborcza.sync_articles(_wyborcza_schowek_url)
         _set_wyborcza_status(True, "")
         return items
     except Exception as e:
@@ -168,7 +168,7 @@ def _summarize_entry(entry_id: str, service) -> None:
         if _is_raindrop(entry_id):
             body = _raindrop.get_article_body(entry_id)
         elif _is_wyborcza(entry_id):
-            body = _wyborcza.get_article_body(entry_id, _wyborcza_cookie_file)
+            body = _wyborcza.get_article_body(entry_id)
         elif _is_youtube(entry_id):
             body = _youtube.get_article_body(entry_id)
         else:
@@ -250,8 +250,13 @@ async def _bg_sync():
                 _raindrop.sync_articles(_raindrop_token)
             if _wyborcza_schowek_url:
                 _sync_wyborcza()
-            if _youtube_enabled and _youtube_cookie_file:
-                _youtube.sync_articles(_youtube_cookie_file)
+            if _youtube_enabled:
+                try:
+                    _youtube.sync_articles()
+                    _set_youtube_status(True)
+                except Exception as e:
+                    _set_youtube_status(False, str(e))
+                    raise
         except Exception as e:
             _log(f"[bg sync] {e}")
         await _ensure_summaries()
@@ -271,10 +276,12 @@ async def lifespan(app: FastAPI):
         _sync_wyborcza()
     else:
         _set_wyborcza_status(False, "")
-    if _youtube_enabled and _youtube_cookie_file:
+    if _youtube_enabled:
         try:
-            _youtube.sync_articles(_youtube_cookie_file)
+            _youtube.sync_articles()
+            _set_youtube_status(True)
         except Exception as e:
+            _set_youtube_status(False, str(e))
             _log(f"[youtube] startup sync failed: {e}")
     asyncio.create_task(_bg_sync())
     asyncio.create_task(_ensure_summaries())
@@ -448,7 +455,7 @@ async def index(request: Request):
         articles = []
     if _wyborcza_schowek_url:
         wyborcza_articles = _wyborcza.list_articles_cached()
-    youtube_videos = _youtube.list_articles_cached() if (_youtube_enabled and _youtube_cookie_file) else []
+    youtube_videos = _youtube.list_articles_cached() if _youtube_enabled else []
 
     all_entries = newsletters + articles + wyborcza_articles + youtube_videos
     def _ts(e):
@@ -470,6 +477,8 @@ async def index(request: Request):
         "has_youtube": has_youtube,
         "wyborcza_enabled": _wyborcza_status["enabled"],
         "wyborcza_error": _wyborcza_status["error"],
+        "youtube_enabled": _youtube_status["enabled"],
+        "youtube_error": _youtube_status["error"],
     })
 
 
@@ -482,16 +491,19 @@ async def refresh():
         articles = []
     wyborcza_articles = _sync_wyborcza() if _wyborcza_schowek_url else []
     youtube_videos = []
-    if _youtube_enabled and _youtube_cookie_file:
+    if _youtube_enabled:
         try:
-            youtube_videos = _youtube.sync_articles(_youtube_cookie_file)
+            youtube_videos = _youtube.sync_articles()
+            _set_youtube_status(True)
         except Exception as e:
+            _set_youtube_status(False, str(e))
             _log(f"[youtube] refresh sync failed: {e}")
     asyncio.create_task(_ensure_summaries())
     asyncio.create_task(_ensure_scores())
     return {
         "count": len(newsletters) + len(articles) + len(wyborcza_articles) + len(youtube_videos),
         "wyborcza_error": _wyborcza_status["error"],
+        "youtube_error": _youtube_status["error"],
     }
 
 
@@ -567,15 +579,12 @@ async def article_done(article_id: str):
             raise HTTPException(status_code=503, detail="Raindrop not configured")
         ok = await loop.run_in_executor(None, _raindrop.move_to_archive, article_id, _raindrop_token)
     elif _is_wyborcza(article_id):
-        if not _wyborcza_cookie_file:
-            raise HTTPException(status_code=503, detail="Wyborcza auth not configured")
         try:
             ok = await loop.run_in_executor(
                 None,
                 _wyborcza.remove_from_schowek,
                 article_id,
                 _wyborcza_schowek_url,
-                _wyborcza_cookie_file,
             )
         except Exception as e:
             _set_wyborcza_status(False, str(e))
@@ -583,7 +592,7 @@ async def article_done(article_id: str):
     elif _is_youtube(article_id):
         if not _youtube_enabled:
             raise HTTPException(status_code=503, detail="YouTube not configured")
-        ok = await loop.run_in_executor(None, _youtube.remove_from_watch_later, article_id, _youtube_cookie_file)
+        ok = await loop.run_in_executor(None, _youtube.remove_from_watch_later, article_id)
     else:
         raise HTTPException(status_code=404, detail="Article not found")
     if not ok:
@@ -596,8 +605,6 @@ async def article_unread(article_id: str):
     if _is_raindrop(article_id):
         ok = _raindrop.mark_unread_local(article_id)
     elif _is_wyborcza(article_id):
-        if not _wyborcza_cookie_file:
-            raise HTTPException(status_code=503, detail="Wyborcza auth not configured")
         loop = asyncio.get_event_loop()
         try:
             ok = await loop.run_in_executor(
@@ -605,7 +612,6 @@ async def article_unread(article_id: str):
                 _wyborcza.add_to_schowek,
                 article_id,
                 _wyborcza_schowek_url,
-                _wyborcza_cookie_file,
             )
         except Exception as e:
             _set_wyborcza_status(False, str(e))

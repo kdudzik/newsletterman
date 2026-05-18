@@ -8,6 +8,7 @@ from email.utils import format_datetime, parsedate_to_datetime
 from pathlib import Path
 
 import requests
+import browser_cookie3
 
 _CACHE_DIR = Path(__file__).parent / ".youtube_cache"
 _INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
@@ -58,47 +59,20 @@ def _parse_ts(rfc_date: str) -> float:
         return 0.0
 
 
-def _cookie_header(cookie_file: str) -> str:
-    """Build a Cookie header string from a Netscape or JSON cookie export."""
-    path = Path(cookie_file)
-    if not path.exists():
-        raise FileNotFoundError(f"YouTube cookie file not found: {cookie_file}")
-    raw = path.read_text(encoding="utf-8", errors="replace")
-    pairs: list[str] = []
-    if raw.lstrip().startswith("["):
-        cookies = json.loads(raw)
-        for c in cookies:
-            name = c.get("name", "")
-            value = c.get("value", "")
-            if name:
-                pairs.append(f"{name}={value}")
-    else:
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split("\t")
-            if len(parts) >= 7:
-                name, value = parts[5], parts[6]
-                if name:
-                    pairs.append(f"{name}={value}")
-    return "; ".join(pairs)
-
-
 def _sapisidhash(sapisid: str) -> str:
     ts = str(int(time.time()))
     digest = hashlib.sha1(f"{ts} {sapisid} https://www.youtube.com".encode()).hexdigest()
     return f"SAPISIDHASH {ts}_{digest}"
 
 
-def _session(cookie_file: str) -> requests.Session:
-    cookie_str = _cookie_header(cookie_file)
-    # Extract SAPISID for auth header
-    sapisid = ""
-    for part in cookie_str.split("; "):
-        if part.startswith("SAPISID="):
-            sapisid = part[len("SAPISID="):]
-            break
+def _session() -> requests.Session:
+    """Build a requests.Session with YouTube cookies read from Chrome."""
+    cj = browser_cookie3.chrome(domain_name=".youtube.com")
+    cookies = {c.name: c.value for c in cj}
+    if not cookies:
+        raise RuntimeError("No YouTube cookies found in Chrome — make sure you're logged in to YouTube in Chrome")
+    cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    sapisid = cookies.get("SAPISID", "")
     s = requests.Session()
     headers = {
         "User-Agent": _BROWSER_UA,
@@ -241,11 +215,12 @@ def _parse_video(raw: dict, position: int = 0) -> dict | None:
 # --- public API ---
 
 def build_service() -> object:
-    """Return the cookie file path as the 'service' (auth token for this source)."""
-    cookie_file = os.environ.get("YOUTUBE_COOKIE_FILE", "")
-    if not cookie_file:
-        raise ValueError("YOUTUBE_COOKIE_FILE env var is required for YouTube Watch Later access")
-    return cookie_file
+    """Verify Chrome YouTube cookies are accessible; returns a sentinel."""
+    cj = browser_cookie3.chrome(domain_name=".youtube.com")
+    cookies = {c.name: c.value for c in cj}
+    if not cookies:
+        raise RuntimeError("No YouTube cookies found in Chrome — log in to YouTube in Chrome first")
+    return True
 
 
 def list_articles_cached() -> list[dict]:
@@ -269,9 +244,9 @@ def list_articles_cached() -> list[dict]:
     return articles
 
 
-def sync_articles(cookie_file: str) -> list[dict]:
+def sync_articles(_service=None) -> list[dict]:
     """Fetch Watch Later via Innertube, prune stale entries, cache new ones."""
-    session = _session(cookie_file)
+    session = _session()
     raw_videos: list[dict] = []
     data = _innertube_post(session, "VLWL")
     batch, token = _extract_videos(data)
@@ -344,8 +319,7 @@ def get_article_body(article_id: str) -> str:
         return cached["body"]
 
     video_id = cached.get("video_id", article_id.removeprefix("youtube-"))
-    cookie_file = os.environ.get("YOUTUBE_COOKIE_FILE", "")
-    body, lang = _fetch_transcript(video_id, cookie_file)
+    body, lang = _fetch_transcript(video_id)
     if not body:
         body = _fetch_description(video_id)
         lang = ""
@@ -408,17 +382,11 @@ def _fetch_description(video_id: str) -> str:
         return ""
 
 
-def _fetch_transcript(video_id: str, cookie_file: str = "") -> tuple[str, str]:
+def _fetch_transcript(video_id: str) -> tuple[str, str]:
     """Returns (text, language_code). Empty strings on failure."""
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
-        if cookie_file:
-            import requests as _req
-            http_client = _req.Session()
-            http_client.headers.update({"Cookie": _cookie_header(cookie_file), "User-Agent": _BROWSER_UA})
-        else:
-            http_client = None
-        api = YouTubeTranscriptApi(http_client=http_client)
+        api = YouTubeTranscriptApi()
         transcript_list = list(api.list(video_id))
         preferred = (
             next((t for t in transcript_list if not t.is_generated and not t.is_translatable), None)
@@ -434,7 +402,7 @@ def _fetch_transcript(video_id: str, cookie_file: str = "") -> tuple[str, str]:
         return "", ""
 
 
-def remove_from_watch_later(article_id: str, cookie_file: str) -> bool:
+def remove_from_watch_later(article_id: str, _cookie_file: str = "") -> bool:
     """Remove video from Watch Later playlist via Innertube, then mark locally as read."""
     cached = _load_entry(article_id)
     if not cached:
@@ -443,31 +411,30 @@ def remove_from_watch_later(article_id: str, cookie_file: str) -> bool:
     video_id = cached.get("video_id", article_id.removeprefix("youtube-"))
     set_video_id = cached.get("set_video_id", "")
 
-    if cookie_file:
-        try:
-            session = _session(cookie_file)
-            if set_video_id:
-                actions = [{"action": "ACTION_REMOVE_VIDEO", "setVideoId": set_video_id}]
-            else:
-                actions = [{"action": "ACTION_REMOVE_VIDEO_BY_VIDEO_ID", "removedVideoId": video_id}]
-            resp = session.post(
-                "https://www.youtube.com/youtubei/v1/browse/edit_playlist",
-                params={"key": _INNERTUBE_KEY},
-                json={
-                    "context": {"client": _INNERTUBE_CLIENT},
-                    "playlistId": "WL",
-                    "actions": actions,
-                },
-                headers={
-                    "Content-Type": "application/json",
-                    "X-YouTube-Client-Name": "1",
-                    "X-YouTube-Client-Version": _INNERTUBE_CLIENT["clientVersion"],
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-        except Exception as e:
-            print(f"[youtube] WL removal failed for {video_id}: {type(e).__name__}: {e}")
+    try:
+        session = _session()
+        if set_video_id:
+            actions = [{"action": "ACTION_REMOVE_VIDEO", "setVideoId": set_video_id}]
+        else:
+            actions = [{"action": "ACTION_REMOVE_VIDEO_BY_VIDEO_ID", "removedVideoId": video_id}]
+        resp = session.post(
+            "https://www.youtube.com/youtubei/v1/browse/edit_playlist",
+            params={"key": _INNERTUBE_KEY},
+            json={
+                "context": {"client": _INNERTUBE_CLIENT},
+                "playlistId": "WL",
+                "actions": actions,
+            },
+            headers={
+                "Content-Type": "application/json",
+                "X-YouTube-Client-Name": "1",
+                "X-YouTube-Client-Version": _INNERTUBE_CLIENT["clientVersion"],
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"[youtube] WL removal failed for {video_id}: {type(e).__name__}: {e}")
 
     cached["read"] = True
     _save_entry(article_id, cached)
@@ -480,29 +447,27 @@ def mark_unread_local(article_id: str) -> bool:
         return False
 
     video_id = cached.get("video_id", article_id.removeprefix("youtube-"))
-    cookie_file = os.environ.get("YOUTUBE_COOKIE_FILE", "")
 
-    if cookie_file:
-        try:
-            session = _session(cookie_file)
-            resp = session.post(
-                "https://www.youtube.com/youtubei/v1/browse/edit_playlist",
-                params={"key": _INNERTUBE_KEY},
-                json={
-                    "context": {"client": _INNERTUBE_CLIENT},
-                    "playlistId": "WL",
-                    "actions": [{"action": "ACTION_ADD_VIDEO", "addedVideoId": video_id}],
-                },
-                headers={
-                    "Content-Type": "application/json",
-                    "X-YouTube-Client-Name": "1",
-                    "X-YouTube-Client-Version": _INNERTUBE_CLIENT["clientVersion"],
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-        except Exception as e:
-            print(f"[youtube] WL re-add failed for {video_id}: {type(e).__name__}: {e}")
+    try:
+        session = _session()
+        resp = session.post(
+            "https://www.youtube.com/youtubei/v1/browse/edit_playlist",
+            params={"key": _INNERTUBE_KEY},
+            json={
+                "context": {"client": _INNERTUBE_CLIENT},
+                "playlistId": "WL",
+                "actions": [{"action": "ACTION_ADD_VIDEO", "addedVideoId": video_id}],
+            },
+            headers={
+                "Content-Type": "application/json",
+                "X-YouTube-Client-Name": "1",
+                "X-YouTube-Client-Version": _INNERTUBE_CLIENT["clientVersion"],
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"[youtube] WL re-add failed for {video_id}: {type(e).__name__}: {e}")
 
     cached.pop("read", None)
     _save_entry(article_id, cached)

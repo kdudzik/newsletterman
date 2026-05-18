@@ -6,6 +6,7 @@ from email.utils import format_datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
+import browser_cookie3
 import requests
 import trafilatura
 
@@ -58,94 +59,16 @@ def _parse_ts(rfc_date: str) -> float:
         return 0.0
 
 
-def _cookiejar_from_netscape(text: str) -> requests.cookies.RequestsCookieJar:
-    jar = requests.cookies.RequestsCookieJar()
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = raw_line.split("\t")
-        if len(parts) != 7:
-            continue
-        domain, _, path, secure, expires, name, value = parts
-        cookie_kwargs = {
-            "domain": domain,
-            "path": path or "/",
-            "secure": secure.upper() == "TRUE",
-        }
-        if expires.isdigit():
-            cookie_kwargs["expires"] = int(expires)
-        jar.set(name, value, **cookie_kwargs)
-    return jar
 
-
-def _cookiejar_from_json(data) -> requests.cookies.RequestsCookieJar:
-    jar = requests.cookies.RequestsCookieJar()
-    if isinstance(data, dict):
-        cookies = data.get("cookies") or data.get("items") or []
-    elif isinstance(data, list):
-        cookies = data
-    else:
-        cookies = []
-
-    for item in cookies:
-        if not isinstance(item, dict):
-            continue
-        name = item.get("name")
-        value = item.get("value")
-        if not name or value is None:
-            continue
-        cookie_kwargs = {
-            "domain": item.get("domain", ""),
-            "path": item.get("path", "/"),
-            "secure": bool(item.get("secure", False)),
-        }
-        expires = item.get("expirationDate", item.get("expires"))
-        if isinstance(expires, (int, float)):
-            cookie_kwargs["expires"] = int(expires)
-        jar.set(name, str(value), **cookie_kwargs)
-    return jar
-
-
-def _cookie_file_auth(cookie_file: str) -> tuple[requests.cookies.RequestsCookieJar | None, str]:
-    path = Path(cookie_file)
-    if not path.exists():
-        return None, ""
-
-    text = path.read_text().strip()
-    if not text:
-        return None, ""
-
-    if "\t" in text and any(line and not line.startswith("#") for line in text.splitlines()):
-        jar = _cookiejar_from_netscape(text)
-        if jar:
-            return jar, ""
-
-    if text.startswith("{") or text.startswith("["):
-        try:
-            jar = _cookiejar_from_json(json.loads(text))
-            if jar:
-                return jar, ""
-        except Exception:
-            pass
-
-    return None, text
-
-
-def _session(cookie_file: str) -> requests.Session:
+def _session() -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": _BROWSER_UA})
-
-    if cookie_file:
-        jar, raw_cookie = _cookie_file_auth(cookie_file)
-        if jar and len(jar) > 0:
-            session.cookies.update(jar)
-            return session
-        if raw_cookie:
-            session.headers["Cookie"] = raw_cookie
-            return session
-
-    raise RuntimeError("Wyborcza auth cookie not configured")
+    cj = browser_cookie3.chrome(domain_name=".wyborcza.pl")
+    cookies = {c.name: c.value for c in cj}
+    if not cookies:
+        raise RuntimeError("No Wyborcza cookies found in Chrome — make sure you're logged in to wyborcza.pl in Chrome")
+    session.cookies.update(cookies)
+    return session
 
 
 def list_articles_cached() -> list[dict]:
@@ -210,11 +133,11 @@ def _resolve_page_id(cached: dict) -> int | None:
     return _page_id_from_url(cached.get("url", ""))
 
 
-def sync_articles(schowek_url: str, cookie_file: str = "") -> list[dict]:
+def sync_articles(schowek_url: str, _cookie_file: str = "") -> list[dict]:
     if not schowek_url:
         return []
 
-    session = _session(cookie_file)
+    session = _session()
     extracted: list[dict] = []
     page = 0
     size = 25
@@ -285,7 +208,7 @@ def sync_articles(schowek_url: str, cookie_file: str = "") -> list[dict]:
     return articles
 
 
-def get_article_body(article_id: str, cookie_file: str = "") -> str:
+def get_article_body(article_id: str, _cookie_file: str = "") -> str:
     cached = _load_entry(article_id)
     body = cached.get("body", "")
     if body and body.strip() not in _BAD_BODIES:
@@ -296,7 +219,7 @@ def get_article_body(article_id: str, cookie_file: str = "") -> str:
         return ""
 
     try:
-        session = _session(cookie_file)
+        session = _session()
         resp = session.get(url, timeout=20, allow_redirects=True)
         resp.raise_for_status()
         html = resp.text
@@ -329,7 +252,7 @@ def mark_unread_local(article_id: str) -> bool:
     return True
 
 
-def remove_from_schowek(article_id: str, schowek_url: str, cookie_file: str = "") -> bool:
+def remove_from_schowek(article_id: str, schowek_url: str, _cookie_file: str = "") -> bool:
     cached = _load_entry(article_id)
     if not cached:
         return False
@@ -339,7 +262,7 @@ def remove_from_schowek(article_id: str, schowek_url: str, cookie_file: str = ""
     if not page_id or not url or not schowek_url:
         return False
 
-    session = _session(cookie_file)
+    session = _session()
     resp = session.delete(
         f"{_page_api_base(schowek_url)}/{page_id}",
         headers={
@@ -356,7 +279,7 @@ def remove_from_schowek(article_id: str, schowek_url: str, cookie_file: str = ""
     return True
 
 
-def add_to_schowek(article_id: str, schowek_url: str, cookie_file: str = "") -> bool:
+def add_to_schowek(article_id: str, schowek_url: str, _cookie_file: str = "") -> bool:
     cached = _load_entry(article_id)
     if not cached:
         return False
@@ -366,7 +289,7 @@ def add_to_schowek(article_id: str, schowek_url: str, cookie_file: str = "") -> 
     if not page_id or not url or not schowek_url:
         return False
 
-    session = _session(cookie_file)
+    session = _session()
     resp = session.put(
         f"{_page_api_base(schowek_url)}/",
         headers={
