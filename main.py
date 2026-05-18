@@ -191,18 +191,12 @@ def _summarize_entry(entry_id: str, service) -> None:
 
 
 def _all_cache_files():
-    """Yield (path, entry_id) for all JSON files in both caches."""
-    import json as _json
-    for cache_dir in (
-        Path(__file__).parent / ".newsletter_cache",
-        Path(__file__).parent / ".raindrop_cache",
-        Path(__file__).parent / ".wyborcza_cache",
-        Path(__file__).parent / ".youtube_cache",
-    ):
-        if not cache_dir.exists():
-            continue
-        for f in sorted(cache_dir.glob("*.json")):
-            yield f, f.stem
+    """Yield (path, entry_id) for all JSON files in the shared cache."""
+    cache_dir = Path(__file__).parent / ".cache"
+    if not cache_dir.exists():
+        return
+    for f in sorted(cache_dir.glob("*.json")):
+        yield f, f.stem
 
 
 async def _ensure_summaries() -> None:

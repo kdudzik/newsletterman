@@ -10,7 +10,7 @@ from pathlib import Path
 import requests
 import browser_cookie3
 
-_CACHE_DIR = Path(__file__).parent / ".youtube_cache"
+_CACHE_DIR = Path(__file__).parent / ".cache"
 _INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
 _INNERTUBE_URL = "https://www.youtube.com/youtubei/v1/browse"
 _INNERTUBE_CLIENT = {
@@ -228,7 +228,7 @@ def list_articles_cached() -> list[dict]:
     if not _CACHE_DIR.exists():
         return []
     articles = []
-    for f in _CACHE_DIR.glob("*.json"):
+    for f in _CACHE_DIR.glob("youtube-*.json"):
         try:
             entry = json.loads(f.read_text())
             if "subject" in entry:
@@ -273,15 +273,19 @@ def sync_articles(_service=None) -> list[dict]:
     current_ids = {f"youtube-{v['videoId']}" for v in unique}
 
     if _CACHE_DIR.exists():
-        for f in _CACHE_DIR.glob("*.json"):
-            if f.stem not in current_ids:
-                try:
-                    entry = json.loads(f.read_text())
+        for f in _CACHE_DIR.glob("youtube-*.json"):
+            try:
+                entry = json.loads(f.read_text())
+                if f.stem in current_ids:
+                    if entry.get("read"):
+                        entry["read"] = False
+                        f.write_text(json.dumps(entry, indent=2))
+                else:
                     if not entry.get("read"):
                         entry["read"] = True
                         f.write_text(json.dumps(entry, indent=2))
-                except Exception:
-                    f.unlink(missing_ok=True)
+            except Exception:
+                f.unlink(missing_ok=True)
 
     articles = []
     for position, raw in enumerate(unique):

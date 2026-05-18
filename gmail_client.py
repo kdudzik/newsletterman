@@ -11,11 +11,12 @@ from googleapiclient.discovery import build
 READ_LATER_LABEL = os.getenv("GMAIL_READ_LATER_LABEL", "Read later")
 _EXCLUDE_SUBJECT = os.getenv("NEWSLETTER_EXCLUDE_SUBJECT", "")
 
-_CACHE_DIR = Path(__file__).parent / ".newsletter_cache"
+_CACHE_DIR = Path(__file__).parent / ".cache"
 
 
 def _cache_file(message_id: str) -> Path:
-    return _CACHE_DIR / f"{message_id}.json"
+    stem = message_id if message_id.startswith("gmail-") else f"gmail-{message_id}"
+    return _CACHE_DIR / f"{stem}.json"
 
 
 def _load_entry(message_id: str) -> dict:
@@ -43,9 +44,9 @@ def _load_cache() -> dict:
     if not _CACHE_DIR.exists():
         return {}
     cache = {}
-    for f in _CACHE_DIR.glob("*.json"):
+    for f in _CACHE_DIR.glob("gmail-*.json"):
         try:
-            cache[f.stem] = json.loads(f.read_text())
+            cache[f.stem[len("gmail-"):]] = json.loads(f.read_text())
         except Exception:
             pass
     return cache
@@ -90,7 +91,7 @@ def list_newsletters_cached() -> list[dict]:
     if not _CACHE_DIR.exists():
         return []
     newsletters = []
-    for f in _CACHE_DIR.glob("*.json"):
+    for f in _CACHE_DIR.glob("gmail-*.json"):
         try:
             entry = json.loads(f.read_text())
             if "subject" in entry:
@@ -121,15 +122,20 @@ def sync_newsletters(service) -> list[dict]:
     current_ids = {msg["id"] for msg in result.get("messages", [])}
 
     if _CACHE_DIR.exists():
-        for f in _CACHE_DIR.glob("*.json"):
-            if f.stem not in current_ids:
-                try:
-                    entry = json.loads(f.read_text())
+        for f in _CACHE_DIR.glob("gmail-*.json"):
+            bare_id = f.stem[len("gmail-"):]
+            try:
+                entry = json.loads(f.read_text())
+                if bare_id in current_ids:
+                    if entry.get("read"):
+                        entry["read"] = False
+                        f.write_text(json.dumps(entry, indent=2))
+                else:
                     if not entry.get("read"):
                         entry["read"] = True
                         f.write_text(json.dumps(entry, indent=2))
-                except Exception:
-                    f.unlink(missing_ok=True)
+            except Exception:
+                f.unlink(missing_ok=True)
 
     newsletters = []
     for msg in result.get("messages", []):

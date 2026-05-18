@@ -6,7 +6,7 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
-.*_cache/
+.cache/
 *-cookies.txt
 com.newsletterman.plist
 config.py

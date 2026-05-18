@@ -21,7 +21,7 @@ def _extract_text(html: str, url: str = "") -> str:
         return text
     return _strip_html(html)
 
-_CACHE_DIR = Path(__file__).parent / ".raindrop_cache"
+_CACHE_DIR = Path(__file__).parent / ".cache"
 _API_BASE = "https://api.raindrop.io/rest/v1"
 _UNSORTED_ID = -1
 _BROWSER_UA = (
@@ -174,7 +174,7 @@ def list_articles_cached() -> list[dict]:
     if not _CACHE_DIR.exists():
         return []
     articles = []
-    for f in _CACHE_DIR.glob("*.json"):
+    for f in _CACHE_DIR.glob("raindrop-*.json"):
         try:
             entry = json.loads(f.read_text())
             if "subject" in entry:
@@ -203,15 +203,19 @@ def sync_articles(token: str) -> list[dict]:
     current_ids = {f"raindrop-{item['_id']}" for item in items}
 
     if _CACHE_DIR.exists():
-        for f in _CACHE_DIR.glob("*.json"):
-            if f.stem not in current_ids:
-                try:
-                    entry = json.loads(f.read_text())
+        for f in _CACHE_DIR.glob("raindrop-*.json"):
+            try:
+                entry = json.loads(f.read_text())
+                if f.stem in current_ids:
+                    if entry.get("read"):
+                        entry["read"] = False
+                        f.write_text(json.dumps(entry, indent=2))
+                else:
                     if not entry.get("read"):
                         entry["read"] = True
                         f.write_text(json.dumps(entry, indent=2))
-                except Exception:
-                    f.unlink(missing_ok=True)
+            except Exception:
+                f.unlink(missing_ok=True)
 
     articles = []
     for item in items:
