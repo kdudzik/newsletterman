@@ -108,7 +108,7 @@
         <div class="card{{ ' card--has-thumbnail' if n.get('thumbnail') else '' }}">
           <div class="card-link">
             <div class="card-header">
-              {% if n.get('thumbnail') %}<a href="{{ n.url }}" target="_blank" rel="noopener" class="card-thumbnail" tabindex="-1"><img src="{{ n.thumbnail }}" alt="" loading="lazy"></a>{% endif %}
+              {% if n.get('thumbnail') %}<a href="{{ n.url }}" target="_blank" rel="noopener" class="card-thumbnail{{ ' card-thumbnail--square' if n.get('source') == 'spotify' else '' }}" tabindex="-1"><img src="{{ n.thumbnail }}" alt="" loading="lazy"></a>{% endif %}
               <div class="card-header-text">
                 {% if is_article %}
                 <a class="subject gmail-link js-subject" href="{{ n.url }}" target="_blank" rel="noopener" title="{{ 'Watch video' if n.get('source') == 'youtube' else ('Listen on Spotify' if n.get('source') == 'spotify' else 'Open article') }}">{{ n.subject | unescape }}<svg class="ext-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="11" height="11"><path fill-rule="evenodd" d="M4.75 2a.75.75 0 0 0 0 1.5h5.44L2.97 10.72a.75.75 0 1 0 1.06 1.06L11.25 4.56v5.44a.75.75 0 0 0 1.5 0V2.75A.75.75 0 0 0 12 2H4.75Z" clip-rule="evenodd"/></svg></a>
