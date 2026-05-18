@@ -137,6 +137,10 @@
     {% endif %}
   </main>
 
+  <footer>
+    <button id="rescore-btn" class="rescore-btn" onclick="doRescore()">Recalculate scores &amp; lean</button>
+  </footer>
+
   <script>
     const SENDER_COLORS = [
       '#e03131', '#1971c2', '#2f9e44', '#e8590c', '#6741d9',
@@ -452,6 +456,17 @@
         text.textContent = '';
         warning.style.display = 'none';
       }
+    }
+
+    async function doRescore() {
+      const btn = document.getElementById('rescore-btn');
+      btn.disabled = true;
+      btn.textContent = 'Rescoring…';
+      try {
+        await fetch('/rescore', { method: 'POST' });
+      } catch (err) { /* fire and forget */ }
+      btn.textContent = 'Rescoring (bg)…';
+      setTimeout(() => { btn.disabled = false; btn.textContent = 'Rescore'; }, 5000);
     }
 
     async function doRefresh() {
