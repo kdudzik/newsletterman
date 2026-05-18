@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Newsletter Man</title>
+  <title>Newsletterman</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📬</text></svg>">
   <link rel="stylesheet" href="/static/style.css?v={{ css_version() }}">
 </head>
@@ -13,7 +13,7 @@
         {% set unread_items = newsletters | rejectattr('read', 'equalto', true) | list %}
         {% set unread_count = unread_items | length %}
         {% set total_mins = namespace(v=0) %}{% for item in unread_items %}{% if item.get('duration') %}{% set total_mins.v = total_mins.v + (item.duration | duration_minutes) %}{% elif item.get('word_count') %}{% set total_mins.v = total_mins.v + (item.word_count | read_time_minutes) %}{% endif %}{% endfor %}
-        <h1>📬 Newsletter Man <span class="subtitle" id="subtitle">{{ unread_count }} items · <span id="total-time">{{ total_mins.v // 60 }} h {{ '%02d' | format(total_mins.v % 60) }} min</span></span></h1>
+        <h1>📬 Newsletterman <span class="subtitle" id="subtitle">{{ unread_count }} items · <span id="total-time">{{ total_mins.v // 60 }} h {{ '%02d' | format(total_mins.v % 60) }} min</span></span></h1>
       </div>
       <div class="header-actions">
         <div class="sort-group" role="group" aria-label="Sort order">
@@ -27,7 +27,7 @@
           <button class="sort-btn" data-sort="value" onclick="setSort('value')">Best value</button>
           {% endif %}
         </div>
-        <button class="sort-btn" id="view-toggle-btn" onclick="toggleView()">Show read</button>
+        <button class="sort-btn" id="view-toggle-btn" onclick="toggleView()">Go to archive</button>
         <button id="refresh-btn" class="sort-btn" onclick="doRefresh()">Refresh</button>
       </div>
     </div>
@@ -345,7 +345,7 @@
     function toggleView() {
       showingRead = !showingRead;
       const btn = document.getElementById('view-toggle-btn');
-      btn.textContent = showingRead ? 'Show unread' : 'Show read';
+      btn.textContent = showingRead ? 'Back to inbox' : 'Go to archive';
       applyView();
       saveState();
     }
@@ -410,7 +410,7 @@
         const s = JSON.parse(localStorage.getItem(LS) || '{}');
         if (s.showRead) {
           showingRead = true;
-          document.getElementById('view-toggle-btn').textContent = 'Show unread';
+          document.getElementById('view-toggle-btn').textContent = 'Back to inbox';
         }
         if (s.sender !== undefined) {
           const match = document.querySelector(`.filter-btn[data-sender="${CSS.escape(s.sender)}"]`);

@@ -17,7 +17,7 @@ def _clean_description(text: str) -> str:
     text = re.sub(r" {2,}", " ", text)
     return text.strip()
 _SPOTIFY_CACHE = Path(__file__).parent.parent / "spotify-export" / ".cache"
-_SCOPE = "user-library-read user-read-playback-position"
+_SCOPE = "user-library-read user-library-modify user-read-playback-position"
 
 
 def _cache_file(entry_id: str) -> Path:
@@ -118,11 +118,8 @@ def sync_articles(_service=None) -> list[dict]:
             }
 
             cached = _load_entry(entry_id)
-            if cached.get("read"):
-                entry["read"] = True
-            if "summary" in cached:
-                entry["summary"] = cached["summary"]
             cached.update(entry)
+            cached.pop("read", None)  # episode is in saved list → treat as unread
             _save_entry(entry_id, cached)
             entries.append(entry)
         results = sp.next(results) if results.get("next") else None
