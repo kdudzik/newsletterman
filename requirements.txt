@@ -11,3 +11,4 @@ requests==2.32.3
 trafilatura
 youtube-transcript-api
 browser-cookie3
+spotipy

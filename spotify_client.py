@@ -1,0 +1,198 @@
+import json
+import os
+import re
+from datetime import datetime, timezone
+from email.utils import format_datetime, parsedate_to_datetime
+from pathlib import Path
+
+import spotipy
+from spotipy.oauth2 import SpotifyOAuth
+
+_CACHE_DIR = Path(__file__).parent / ".cache"
+
+
+def _clean_description(text: str) -> str:
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"([.!?])([A-ZĄĆĘŁŃÓŚŹŻ])", r"\1 \2", text)
+    text = re.sub(r" {2,}", " ", text)
+    return text.strip()
+_SPOTIFY_CACHE = Path(__file__).parent.parent / "spotify-export" / ".cache"
+_SCOPE = "user-library-read user-read-playback-position"
+
+
+def _cache_file(entry_id: str) -> Path:
+    return _CACHE_DIR / f"{entry_id}.json"
+
+
+def _load_entry(entry_id: str) -> dict:
+    f = _cache_file(entry_id)
+    if f.exists():
+        try:
+            return json.loads(f.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_entry(entry_id: str, data: dict) -> None:
+    _CACHE_DIR.mkdir(exist_ok=True)
+    _cache_file(entry_id).write_text(json.dumps(data, indent=2))
+
+
+def _iso_to_rfc2822(iso: str) -> str:
+    try:
+        if len(iso) == 4:
+            dt = datetime(int(iso), 1, 1, tzinfo=timezone.utc)
+        elif len(iso) == 7:
+            dt = datetime(int(iso[:4]), int(iso[5:7]), 1, tzinfo=timezone.utc)
+        else:
+            dt = datetime.strptime(iso, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        return format_datetime(dt)
+    except Exception:
+        return iso
+
+
+def _parse_ts(rfc_date: str) -> float:
+    try:
+        return parsedate_to_datetime(rfc_date).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _client() -> spotipy.Spotify:
+    cache_path = str(_SPOTIFY_CACHE) if _SPOTIFY_CACHE.exists() else None
+    return spotipy.Spotify(auth_manager=SpotifyOAuth(
+        client_id=os.getenv("SPOTIPY_CLIENT_ID"),
+        client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
+        redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI", "http://127.0.0.1:8888/callback"),
+        scope=_SCOPE,
+        cache_path=cache_path,
+        open_browser=False,
+    ))
+
+
+def sync_articles(_service=None) -> list[dict]:
+    sp = _client()
+    results = sp.current_user_saved_episodes(limit=50)
+    entries = []
+    seen_ids = set()
+    while results:
+        for item in results.get("items", []):
+            ep = item.get("episode")
+            if not ep:
+                continue
+            episode_id = ep["id"]
+            entry_id = f"spotify-{episode_id}"
+            if entry_id in seen_ids:
+                continue
+            seen_ids.add(entry_id)
+
+            show = ep.get("show", {})
+            title = ep.get("name", "(no title)")
+            show_name = show.get("name", "")
+            release_date = ep.get("release_date", "")
+            date_rfc = _iso_to_rfc2822(release_date) if release_date else format_datetime(datetime.now(timezone.utc))
+            duration_ms = ep.get("duration_ms", 0)
+            duration_s = duration_ms // 1000
+            duration_min = duration_s // 60
+            description = _clean_description(ep.get("description", ""))
+            url = ep.get("external_urls", {}).get("spotify", f"https://open.spotify.com/episode/{episode_id}")
+            images = ep.get("images") or show.get("images") or []
+            thumbnail = images[0]["url"] if images else ""
+
+            languages = ep.get("languages") or []
+            language = languages[0].lower() if languages else ""
+
+            entry = {
+                "id": entry_id,
+                "subject": title,
+                "from": show_name,
+                "date": date_rfc,
+                "snippet": description[:200] if description else "",
+                "url": url,
+                "thumbnail": thumbnail,
+                "duration": f"{duration_min}:{duration_s % 60:02d}" if duration_min else "",
+                "source": "spotify",
+                "episode_id": episode_id,
+                "language": language,
+            }
+
+            cached = _load_entry(entry_id)
+            if cached.get("read"):
+                entry["read"] = True
+            if "summary" in cached:
+                entry["summary"] = cached["summary"]
+            cached.update(entry)
+            _save_entry(entry_id, cached)
+            entries.append(entry)
+        results = sp.next(results) if results.get("next") else None
+    return entries
+
+
+def list_articles_cached() -> list[dict]:
+    entries = []
+    if not _CACHE_DIR.exists():
+        return entries
+    for f in _CACHE_DIR.glob("spotify-*.json"):
+        try:
+            entry = json.loads(f.read_text())
+        except Exception:
+            continue
+        if entry.get("read"):
+            continue
+        if "subject" in entry:
+            entries.append({k: entry[k] for k in (
+                "id", "subject", "from", "date", "snippet", "summary",
+                "url", "thumbnail", "duration", "source",
+                "relevance_score", "relevance_note",
+                "challenge_score", "challenge_note",
+                "lean", "lean_note",
+            ) if k in entry})
+    entries.sort(key=lambda a: _parse_ts(a.get("date", "")), reverse=True)
+    return entries
+
+
+def get_article_body(entry_id: str) -> str:
+    cached = _load_entry(entry_id)
+    description = cached.get("description", "")
+    if not description:
+        episode_id = cached.get("episode_id", entry_id.removeprefix("spotify-"))
+        try:
+            sp = _client()
+            ep = sp.episode(episode_id)
+            description = _clean_description(ep.get("description", "") or ep.get("html_description", ""))
+            cached["description"] = description
+            _save_entry(entry_id, cached)
+        except Exception as e:
+            print(f"[spotify] description fetch failed for {episode_id}: {e}")
+    return description
+
+
+def remove_from_saved(entry_id: str) -> bool:
+    cached = _load_entry(entry_id)
+    if not cached:
+        return False
+    episode_id = cached.get("episode_id", entry_id.removeprefix("spotify-"))
+    try:
+        sp = _client()
+        sp.current_user_saved_episodes_delete([episode_id])
+    except Exception as e:
+        print(f"[spotify] remove saved episode failed for {episode_id}: {e}")
+    cached["read"] = True
+    _save_entry(entry_id, cached)
+    return True
+
+
+def mark_unread(entry_id: str) -> bool:
+    cached = _load_entry(entry_id)
+    if not cached:
+        return False
+    episode_id = cached.get("episode_id", entry_id.removeprefix("spotify-"))
+    try:
+        sp = _client()
+        sp.current_user_saved_episodes_add([episode_id])
+    except Exception as e:
+        print(f"[spotify] re-save episode failed for {episode_id}: {e}")
+    cached.pop("read", None)
+    _save_entry(entry_id, cached)
+    return True

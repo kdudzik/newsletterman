@@ -339,11 +339,21 @@ def move_to_archive(article_id: str, token: str) -> bool:
     return True
 
 
-def mark_unread_local(article_id: str) -> bool:
-    """Remove the read flag locally (no Raindrop API call)."""
+def mark_unread(article_id: str, token: str) -> bool:
+    """Move bookmark back to Unsorted and clear local read flag."""
     cached = _load_entry(article_id)
-    if not cached:
+    raindrop_id = cached.get("raindrop_id")
+    if not raindrop_id:
         return False
+    try:
+        requests.put(
+            f"{_API_BASE}/raindrop/{raindrop_id}",
+            headers=_headers(token),
+            json={"collection": {"$id": _UNSORTED_ID}},
+            timeout=10,
+        ).raise_for_status()
+    except Exception as e:
+        print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [raindrop] mark_unread error: {e}")
     cached.pop("read", None)
     _save_entry(article_id, cached)
     return True

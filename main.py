@@ -18,6 +18,7 @@ from gmail_client import get_service, list_newsletters_cached, sync_newsletters,
 import raindrop_client as _raindrop
 import wyborcza_client as _wyborcza
 import youtube_client as _youtube
+import spotify_client as _spotify
 from summarizer import summarize
 import scorer as _scorer
 try:
@@ -39,6 +40,7 @@ def _context_file() -> str:
 
 _gmail_service = None
 _youtube_enabled: bool = os.getenv("YOUTUBE_ENABLED", "").lower() in ("1", "true", "yes")
+_spotify_enabled: bool = os.getenv("SPOTIFY_ENABLED", "").lower() in ("1", "true", "yes")
 _raindrop_token: str = os.getenv("RAINDROP_TEST_TOKEN", "")
 _wyborcza_schowek_url: str = os.getenv("WYBORCZA_SCHOWEK_URL", "")
 _wyborcza_status = {
@@ -51,12 +53,23 @@ _youtube_status = {
     "ok": False,
     "error": "",
 }
+_spotify_status = {
+    "enabled": _spotify_enabled,
+    "ok": False,
+    "error": "",
+}
 
 
 def _set_youtube_status(ok: bool, error: str = "") -> None:
     _youtube_status["enabled"] = _youtube_enabled
     _youtube_status["ok"] = ok
     _youtube_status["error"] = error
+
+
+def _set_spotify_status(ok: bool, error: str = "") -> None:
+    _spotify_status["enabled"] = _spotify_enabled
+    _spotify_status["ok"] = ok
+    _spotify_status["error"] = error
 
 
 def _friendly_wyborcza_error(error: str) -> str:
@@ -89,6 +102,10 @@ def _is_youtube(entry_id: str) -> bool:
     return entry_id.startswith("youtube-")
 
 
+def _is_spotify(entry_id: str) -> bool:
+    return entry_id.startswith("spotify-")
+
+
 def _load_any(entry_id: str) -> dict:
     if _is_raindrop(entry_id):
         return _raindrop._load_entry(entry_id)
@@ -96,6 +113,8 @@ def _load_any(entry_id: str) -> dict:
         return _wyborcza._load_entry(entry_id)
     if _is_youtube(entry_id):
         return _youtube._load_entry(entry_id)
+    if _is_spotify(entry_id):
+        return _spotify._load_entry(entry_id)
     return _load_entry(entry_id)
 
 
@@ -106,6 +125,8 @@ def _save_any(entry_id: str, data: dict) -> None:
         _wyborcza._save_entry(entry_id, data)
     elif _is_youtube(entry_id):
         _youtube._save_entry(entry_id, data)
+    elif _is_spotify(entry_id):
+        _spotify._save_entry(entry_id, data)
     else:
         _save_entry(entry_id, data)
 
@@ -171,6 +192,8 @@ def _summarize_entry(entry_id: str, service) -> None:
             body = _wyborcza.get_article_body(entry_id)
         elif _is_youtube(entry_id):
             body = _youtube.get_article_body(entry_id)
+        elif _is_spotify(entry_id):
+            body = _spotify.get_article_body(entry_id)
         else:
             data = get_newsletter_body(entry_id, service)
             body = data.get("body", "")
@@ -179,9 +202,13 @@ def _summarize_entry(entry_id: str, service) -> None:
         cached = _load_any(entry_id)
         subject = cached.get("subject", "")
         is_video = _is_youtube(entry_id)
+        is_podcast = _is_spotify(entry_id)
         is_article = _is_raindrop(entry_id) or _is_wyborcza(entry_id)
-        language = cached.get("transcript_language", "") if is_video else ""
-        summary = summarize(body, subject, is_article=is_article, is_video=is_video, language=language)
+        if is_podcast and len(body) < 400:
+            summary = body
+        else:
+            language = cached.get("transcript_language", "") if is_video else cached.get("language", "") if is_podcast else ""
+            summary = summarize(body, subject, is_article=is_article, is_video=is_video, is_podcast=is_podcast, language=language)
         cached["summary"] = summary
         _save_any(entry_id, cached)
         _log(f"[summarize] done: {entry_id}")
@@ -218,8 +245,8 @@ async def _ensure_summaries() -> None:
             continue
         if "subject" in entry and not entry.get("summary"):
             await loop.run_in_executor(None, _summarize_entry, entry_id, bg_service)
-            if _is_youtube(entry_id):
-                await asyncio.sleep(3)
+            if _is_youtube(entry_id) or _is_spotify(entry_id):
+                await asyncio.sleep(1)
 
 
 async def _ensure_scores() -> None:
@@ -251,6 +278,13 @@ async def _bg_sync():
                 except Exception as e:
                     _set_youtube_status(False, str(e))
                     raise
+            if _spotify_enabled:
+                try:
+                    _spotify.sync_articles()
+                    _set_spotify_status(True)
+                except Exception as e:
+                    _set_spotify_status(False, str(e))
+                    raise
         except Exception as e:
             _log(f"[bg sync] {e}")
         await _ensure_summaries()
@@ -277,6 +311,13 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             _set_youtube_status(False, str(e))
             _log(f"[youtube] startup sync failed: {e}")
+    if _spotify_enabled:
+        try:
+            _spotify.sync_articles()
+            _set_spotify_status(True)
+        except Exception as e:
+            _set_spotify_status(False, str(e))
+            _log(f"[spotify] startup sync failed: {e}")
     asyncio.create_task(_bg_sync())
     asyncio.create_task(_ensure_summaries())
     asyncio.create_task(_ensure_scores())
@@ -450,8 +491,9 @@ async def index(request: Request):
     if _wyborcza_schowek_url:
         wyborcza_articles = _wyborcza.list_articles_cached()
     youtube_videos = _youtube.list_articles_cached() if _youtube_enabled else []
+    spotify_episodes = _spotify.list_articles_cached() if _spotify_enabled else []
 
-    all_entries = newsletters + articles + wyborcza_articles + youtube_videos
+    all_entries = newsletters + articles + wyborcza_articles + youtube_videos + spotify_episodes
     def _ts(e):
         try:
             return parsedate_to_datetime(e.get("date", "")).timestamp()
@@ -462,6 +504,7 @@ async def index(request: Request):
     has_raindrop = bool(_raindrop_token) and any(e.get("source") == "raindrop" for e in all_entries)
     has_wyborcza = bool(_wyborcza_schowek_url) and any(e.get("source") == "wyborcza" for e in all_entries)
     has_youtube = _youtube_enabled and any(e.get("source") == "youtube" for e in all_entries)
+    has_spotify = _spotify_enabled and any(e.get("source") == "spotify" for e in all_entries)
     return templates.TemplateResponse("index.html", {
         "request": request,
         "newsletters": all_entries,
@@ -469,10 +512,13 @@ async def index(request: Request):
         "has_raindrop": has_raindrop,
         "has_wyborcza": has_wyborcza,
         "has_youtube": has_youtube,
+        "has_spotify": has_spotify,
         "wyborcza_enabled": _wyborcza_status["enabled"],
         "wyborcza_error": _wyborcza_status["error"],
         "youtube_enabled": _youtube_status["enabled"],
         "youtube_error": _youtube_status["error"],
+        "spotify_enabled": _spotify_status["enabled"],
+        "spotify_error": _spotify_status["error"],
     })
 
 
@@ -492,12 +538,21 @@ async def refresh():
         except Exception as e:
             _set_youtube_status(False, str(e))
             _log(f"[youtube] refresh sync failed: {e}")
+    spotify_episodes = []
+    if _spotify_enabled:
+        try:
+            spotify_episodes = _spotify.sync_articles()
+            _set_spotify_status(True)
+        except Exception as e:
+            _set_spotify_status(False, str(e))
+            _log(f"[spotify] refresh sync failed: {e}")
     asyncio.create_task(_ensure_summaries())
     asyncio.create_task(_ensure_scores())
     return {
-        "count": len(newsletters) + len(articles) + len(wyborcza_articles) + len(youtube_videos),
+        "count": len(newsletters) + len(articles) + len(wyborcza_articles) + len(youtube_videos) + len(spotify_episodes),
         "wyborcza_error": _wyborcza_status["error"],
         "youtube_error": _youtube_status["error"],
+        "spotify_error": _spotify_status["error"],
     }
 
 
@@ -587,6 +642,10 @@ async def article_done(article_id: str):
         if not _youtube_enabled:
             raise HTTPException(status_code=503, detail="YouTube not configured")
         ok = await loop.run_in_executor(None, _youtube.remove_from_watch_later, article_id)
+    elif _is_spotify(article_id):
+        if not _spotify_enabled:
+            raise HTTPException(status_code=503, detail="Spotify not configured")
+        ok = await loop.run_in_executor(None, _spotify.remove_from_saved, article_id)
     else:
         raise HTTPException(status_code=404, detail="Article not found")
     if not ok:
@@ -596,10 +655,12 @@ async def article_done(article_id: str):
 
 @app.post("/article/{article_id}/unread")
 async def article_unread(article_id: str):
+    loop = asyncio.get_event_loop()
     if _is_raindrop(article_id):
-        ok = _raindrop.mark_unread_local(article_id)
+        if not _raindrop_token:
+            raise HTTPException(status_code=503, detail="Raindrop not configured")
+        ok = await loop.run_in_executor(None, _raindrop.mark_unread, article_id, _raindrop_token)
     elif _is_wyborcza(article_id):
-        loop = asyncio.get_event_loop()
         try:
             ok = await loop.run_in_executor(
                 None,
@@ -611,7 +672,9 @@ async def article_unread(article_id: str):
             _set_wyborcza_status(False, str(e))
             raise HTTPException(status_code=502, detail="Wyborcza Schowek add failed")
     elif _is_youtube(article_id):
-        ok = _youtube.mark_unread_local(article_id)
+        ok = await loop.run_in_executor(None, _youtube.mark_unread, article_id)
+    elif _is_spotify(article_id):
+        ok = await loop.run_in_executor(None, _spotify.mark_unread, article_id)
     else:
         raise HTTPException(status_code=404, detail="Article not found")
     if not ok:

@@ -18,14 +18,22 @@ def _is_polish(text: str) -> bool:
     return sum(1 for c in sample if c in _POLISH_CHARS) >= 5
 
 
-def summarize(text: str, subject: str, is_article: bool = False, is_video: bool = False, language: str = "") -> str:
+def summarize(text: str, subject: str, is_article: bool = False, is_video: bool = False, is_podcast: bool = False, language: str = "") -> str:
     client = _get_client()
-    polish = (language == "pl") if language else _is_polish(text)
+    polish = (language == "pl") if language else _is_polish(text + " " + subject)
     lang_instruction = (
         "Write the summary in Polish." if polish
         else "Write the summary in English."
     )
-    if is_video:
+    if is_podcast:
+        system_prompt = (
+            "You are a podcast summarizer. Given the description of a podcast episode, "
+            "write a concise summary in 3-5 bullet points. Be specific and highlight "
+            "the most interesting or useful content. Do not include any URLs or links. "
+            f"{lang_instruction}"
+        )
+        user_content = f"Podcast episode: {subject}\n\n{text[:8000]}"
+    elif is_video:
         system_prompt = (
             "You are a video summarizer. Given a transcript or description of a YouTube video, "
             "write a concise summary in 3-5 bullet points. Be specific and highlight "

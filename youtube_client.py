@@ -445,7 +445,7 @@ def remove_from_watch_later(article_id: str, _cookie_file: str = "") -> bool:
     return True
 
 
-def mark_unread_local(article_id: str) -> bool:
+def mark_unread(article_id: str) -> bool:
     cached = _load_entry(article_id)
     if not cached:
         return False
