@@ -40,6 +40,19 @@ def _context_file() -> str:
     return ""
 
 
+def _is_title_only_summary(cached: dict) -> bool:
+    """True when the summary contains no real content (e.g. Spotify episodes with no description)."""
+    summary = (cached.get("summary") or "").strip()
+    subject = (cached.get("subject") or "").strip()
+    if not summary or summary == subject:
+        return True
+    # Podsumowanie tygodnia episodes have no Spotify description — their summaries
+    # are just a lightly-reworded version of the title, not real content.
+    if "podsumowanie tygodnia" in (cached.get("from") or "").lower():
+        return True
+    return False
+
+
 def _score_entry(entry_id: str) -> None:
     """Generate relevance/challenge/lean scores for one entry. Blocking."""
     ctx = _context_file()
@@ -48,6 +61,14 @@ def _score_entry(entry_id: str) -> None:
         cached = source.load_entry(entry_id)
         summary = cached.get("summary", "")
         if not summary:
+            return
+        if _is_title_only_summary(cached):
+            _score_keys = ("relevance_score", "relevance_note", "challenge_score", "challenge_note",
+                           "lean", "lean_note", "trust_score", "trust_note")
+            if any(k in cached for k in _score_keys):
+                for k in _score_keys:
+                    cached.pop(k, None)
+                source.save_entry(entry_id, cached)
             return
         changed = False
         if ctx and cached.get("relevance_score") is None:
@@ -147,7 +168,10 @@ async def _ensure_scores() -> None:
             entry = _json.loads(f.read_text())
         except Exception:
             continue
-        if entry.get("summary") and (entry.get("relevance_score") is None or entry.get("lean") is None or entry.get("trust_score") is None):
+        _score_keys = ("relevance_score", "lean", "trust_score")
+        needs_cleanup = _is_title_only_summary(entry) and any(k in entry for k in _score_keys)
+        needs_scoring = entry.get("summary") and not _is_title_only_summary(entry) and (entry.get("relevance_score") is None or entry.get("lean") is None or entry.get("trust_score") is None)
+        if needs_cleanup or needs_scoring:
             _scoring_in_progress.add(entry_id)
             try:
                 await loop.run_in_executor(None, _score_entry, entry_id)
@@ -574,6 +598,8 @@ async def entries_status(ids: str):
         scores: dict = {"subject": cached.get("subject", "")}
         if summary:
             scores["summary_html"] = str(_markdown_summary(summary))
+            if _is_title_only_summary(cached):
+                scores["scores_na"] = True
             if cached.get("relevance_score") is not None:
                 rs = cached["relevance_score"]
                 cs = cached.get("challenge_score", 0)
