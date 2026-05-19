@@ -99,6 +99,7 @@ def list_newsletters_cached() -> list[dict]:
                     "id", "subject", "from", "date", "snippet", "summary", "read",
                     "word_count", "minutes", "relevance_score", "relevance_note",
                     "challenge_score", "challenge_note", "lean", "lean_note",
+                    "trust_score", "trust_note",
                 ) if k in entry})
         except Exception:
             pass

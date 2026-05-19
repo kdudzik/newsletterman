@@ -518,6 +518,10 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
 .challenge-high { background: #e5dbff; color: #6741d9; }
 .challenge-mid  { background: #dbe4ff; color: #3b5bdb; }
 .challenge-low  { background: #f1f3f5; color: #868e96; }
+.trust-high { background: #d3f9d8; color: #2b8a3e; }
+.trust-mid  { background: #fff3bf; color: #e67700; }
+.trust-low  { background: #ffe3e3; color: #c92a2a; }
+.value-badge { background: #fff9db; color: #5c4000; font-weight: 600; }
 .lean-xl { background: #c92a2a; color: #fff; }
 .lean-l  { background: #ffc9c9; color: #c92a2a; }
 .lean-c  { background: #f1f3f5; color: #868e96; }

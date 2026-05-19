@@ -59,7 +59,9 @@ def sync_articles(_service=None) -> list[dict]:
             ep = item.get("episode")
             if not ep:
                 continue
-            episode_id = ep["id"]
+            episode_id = ep.get("id")
+            if not episode_id:
+                continue
             entry_id = f"spotify-{episode_id}"
             if entry_id in seen_ids:
                 continue
@@ -123,6 +125,7 @@ def list_articles_cached() -> list[dict]:
                 "relevance_score", "relevance_note",
                 "challenge_score", "challenge_note",
                 "lean", "lean_note",
+                "trust_score", "trust_note",
             ) if k in entry})
     entries.sort(key=lambda a: _parse_ts(a.get("date", "")), reverse=True)
     return entries

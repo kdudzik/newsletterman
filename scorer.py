@@ -93,6 +93,60 @@ def score_political_lean(summary: str, language: str = "") -> dict:
         return {}
 
 
+_TRUST_PROMPT = """\
+You are a content quality analyst. Given a summary of any reading item — article, newsletter, \
+video, podcast, Reddit post, forum thread, website, or anything else — plus its author/source \
+and title, assess its trustworthiness and informational quality.
+
+Consider:
+- Are claims specific and appropriately hedged, or vague and absolute?
+- Is framing measured or sensationalist (e.g. alarming headlines, overstatement)?
+- Does the author/domain seem credible for this type of content?
+- Does the content rely on evidence, data, or named sources — or pure assertion?
+- For opinion/creative/entertainment content, score on internal consistency and honesty about \
+what it is — not on factual rigor.
+
+Score 0–10: 0 = clearly unreliable/clickbait/misinformation, 10 = rigorous, measured, well-sourced.
+Most decent content should score 5–8. Reserve 0–3 for obvious clickbait or misinformation, \
+9–10 for exceptional rigor.
+
+Write trust_note in the SAME LANGUAGE as the summary.
+
+Return ONLY valid JSON, no other text:
+{"trust": <int 0-10>, "trust_note": "<one sentence explaining the score>"}\
+"""
+
+
+def score_trustworthiness(summary: str, author: str = "", title: str = "") -> dict:
+    """Returns {trust_score, trust_note} or {} on failure."""
+    if not summary:
+        return {}
+    try:
+        client = _get_client()
+        user_parts = []
+        if title:
+            user_parts.append(f"<TITLE>\n{title}\n</TITLE>")
+        if author:
+            user_parts.append(f"<AUTHOR>\n{author}\n</AUTHOR>")
+        user_parts.append(f"<SUMMARY>\n{summary}\n</SUMMARY>")
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=120,
+            messages=[
+                {"role": "system", "content": _TRUST_PROMPT},
+                {"role": "user", "content": "\n\n".join(user_parts)},
+            ],
+        )
+        raw = response.choices[0].message.content.strip()
+        data = json.loads(raw)
+        trust = int(data["trust"])
+        if not (0 <= trust <= 10):
+            return {}
+        return {"trust_score": trust, "trust_note": str(data.get("trust_note", ""))}
+    except Exception:
+        return {}
+
+
 def score_newsletter(summary: str, context_path: str) -> dict:
     """Returns {relevance, relevance_note, challenge, challenge_note} or {} on failure."""
     if not summary or not context_path:

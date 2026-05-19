@@ -63,6 +63,16 @@ def _score_entry(entry_id: str) -> None:
                 cached.update(lean)
                 changed = True
                 _log(f"[score] lean done: {entry_id} {lean['lean']}")
+        if cached.get("trust_score") is None:
+            trust = _scorer.score_trustworthiness(
+                summary,
+                author=cached.get("from", ""),
+                title=cached.get("subject", ""),
+            )
+            if trust:
+                cached.update(trust)
+                changed = True
+                _log(f"[score] trust done: {entry_id} {trust['trust_score']}")
         if changed:
             source.save_entry(entry_id, cached)
     except Exception as e:
@@ -123,17 +133,26 @@ async def _ensure_summaries() -> None:
                 await asyncio.sleep(1)
 
 
+_scoring_in_progress: set[str] = set()
+
+
 async def _ensure_scores() -> None:
     """Background task: score all cached entries that have a summary but no scores yet."""
     import json as _json
     loop = asyncio.get_event_loop()
     for f, entry_id in _all_cache_files():
+        if entry_id in _scoring_in_progress:
+            continue
         try:
             entry = _json.loads(f.read_text())
         except Exception:
             continue
-        if entry.get("summary") and (entry.get("relevance_score") is None or entry.get("lean") is None):
-            await loop.run_in_executor(None, _score_entry, entry_id)
+        if entry.get("summary") and (entry.get("relevance_score") is None or entry.get("lean") is None or entry.get("trust_score") is None):
+            _scoring_in_progress.add(entry_id)
+            try:
+                await loop.run_in_executor(None, _score_entry, entry_id)
+            finally:
+                _scoring_in_progress.discard(entry_id)
 
 
 def _sync_all_sources(label: str = "") -> list[int]:
@@ -570,6 +589,12 @@ async def entries_status(ids: str):
                 lean_note = cached.get("lean_note", "")
                 scores["lean"] = lean
                 scores["lean_html"] = f'<span class="score-badge lean-{lean.lower()}">{lean}<span class="score-tip">{_safe_escape(lean_note)}</span></span>'
+            if cached.get("trust_score") is not None:
+                ts = cached["trust_score"]
+                tn = cached.get("trust_note", "")
+                tl = "high" if ts >= 7 else ("mid" if ts >= 4 else "low")
+                scores["trust_score"] = ts
+                scores["trust_html"] = f'<span class="score-badge trust-{tl}">🛡 {ts}<span class="score-tip">{_safe_escape(tn)}</span></span>'
         result[entry_id] = scores
     return result
 
