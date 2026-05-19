@@ -50,6 +50,16 @@ def _is_title_only_summary(cached: dict) -> bool:
     return False
 
 
+def _deferred_retry_at(cached: dict) -> datetime | None:
+    raw = cached.get("transcription_deferred_until", "")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except Exception:
+        return None
+
+
 def _score_entry(entry_id: str) -> None:
     """Generate relevance/challenge/lean scores for one entry. Blocking."""
     ctx = _context_file()
@@ -147,7 +157,10 @@ async def _ensure_summaries() -> None:
             entry = _json.loads(f.read_text())
         except Exception:
             continue
-        if "subject" in entry and not entry.get("summary"):
+        retry_at = _deferred_retry_at(entry)
+        if retry_at and retry_at > datetime.now().astimezone():
+            continue
+        if "subject" in entry and (not entry.get("summary") or _is_title_only_summary(entry)):
             source = registry.for_entry(entry_id)
             await loop.run_in_executor(None, _summarize_entry, entry_id)
             if source.throttle_after_body:
@@ -545,6 +558,16 @@ async def entry_summarize(entry_id: str):
     loop = asyncio.get_event_loop()
     body = await loop.run_in_executor(None, source.get_body, entry_id)
     if not body:
+        cached = source.load_entry(entry_id)
+        retry_at = _deferred_retry_at(cached)
+        if retry_at and retry_at > datetime.now().astimezone():
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "detail": cached.get("transcription_error", "Transcript is queued for a later retry."),
+                    "retry_at": retry_at.isoformat(),
+                },
+            )
         raise HTTPException(status_code=422, detail="No body content found")
     cached = source.load_entry(entry_id)
     subject = cached.get("subject", "")

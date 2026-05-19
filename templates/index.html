@@ -44,6 +44,10 @@
         <span id="youtube-warning-text" class="auth-warning-detail">{{ youtube_error }}</span>
         <a href="https://www.youtube.com" target="_blank" rel="noopener" class="auth-warning-btn">Log in →</a>
       </div>
+      <div id="spotify-warning" class="auth-warning" style="{{ '' if (spotify_enabled and spotify_error) else 'display:none;' }}">
+        <span class="auth-warning-label">Spotify</span>
+        <span id="spotify-warning-text" class="auth-warning-detail">{{ spotify_error }}</span>
+      </div>
     </div>
     {% if items %}
     <div class="filter-bar" id="filter-bar">
@@ -489,7 +493,8 @@
         const data = await resp.json();
         setAuthWarning('wyborcza', data.wyborcza_error || '');
         setAuthWarning('youtube', data.youtube_error || '');
-        if (!data.wyborcza_error && !data.youtube_error) {
+        setAuthWarning('spotify', data.spotify_error || '');
+        if (!data.wyborcza_error && !data.youtube_error && !data.spotify_error) {
           location.reload();
           return;
         }

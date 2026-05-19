@@ -1,6 +1,9 @@
 import os
 import re
 import tempfile
+from pathlib import Path
+from shutil import which
+from datetime import datetime, timedelta
 
 from googleapiclient.http import MediaIoBaseDownload
 from pydub import AudioSegment
@@ -9,6 +12,50 @@ _FOLDER_NAME = "3R Podsumowania tygodnia"
 _FOLDER_IDS: list[str] = []
 
 CHUNK_MS = 20 * 60 * 1000  # 20-minute chunks stay well under 25 MB
+
+
+class TranscriptDeferredError(RuntimeError):
+    def __init__(self, retry_at: str, reason: str):
+        super().__init__(reason)
+        self.retry_at = retry_at
+        self.reason = reason
+
+
+def _next_retry_at() -> str:
+    now = datetime.now().astimezone()
+    retry_local = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
+    return retry_local.isoformat()
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(token in text for token in ("quota", "rate limit", "rate_limit", "too many requests", "429"))
+
+
+def _resolve_binary(env_name: str, candidates: list[str]) -> str:
+    explicit = os.getenv(env_name, "").strip()
+    if explicit and Path(explicit).exists():
+        return explicit
+    found = which(candidates[0])
+    if found:
+        return found
+    for candidate in candidates[1:]:
+        if Path(candidate).exists():
+            return candidate
+    raise RuntimeError(f"Missing required binary for audio transcription: {candidates[0]}")
+
+
+def _configure_audio_tools() -> None:
+    AudioSegment.converter = _resolve_binary("FFMPEG_BINARY", [
+        "ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/opt/homebrew/bin/ffmpeg",
+    ])
+    AudioSegment.ffprobe = _resolve_binary("FFPROBE_BINARY", [
+        "ffprobe",
+        "/usr/local/bin/ffprobe",
+        "/opt/homebrew/bin/ffprobe",
+    ])
 
 
 def _resolve_folder_ids(drive_service) -> list[str]:
@@ -63,6 +110,7 @@ def transcribe_episode(drive_service, file_id: str) -> str:
 
 
 def _transcribe_chunked(mp3_path: str) -> str:
+    _configure_audio_tools()
     audio = AudioSegment.from_mp3(mp3_path)
     duration_min = len(audio) // 60000
     chunks = [audio[i:i + CHUNK_MS] for i in range(0, len(audio), CHUNK_MS)]
@@ -87,11 +135,19 @@ def _transcribe_file(fp) -> str:
     groq_key = os.getenv("GROQ_API_KEY")
     if groq_key:
         from groq import Groq
-        result = Groq(api_key=groq_key).audio.transcriptions.create(
-            model="whisper-large-v3-turbo",
-            file=fp,
-            response_format="text",
-        )
+        try:
+            result = Groq(api_key=groq_key).audio.transcriptions.create(
+                model="whisper-large-v3-turbo",
+                file=fp,
+                response_format="text",
+            )
+        except Exception as e:
+            if _is_quota_error(e):
+                raise TranscriptDeferredError(
+                    retry_at=_next_retry_at(),
+                    reason="Transcript quota reached for today. Podcast transcription will retry tomorrow.",
+                ) from e
+            raise
         return result if isinstance(result, str) else result.text
     else:
         import openai

@@ -37,6 +37,25 @@ def _iso_to_rfc2822(iso: str) -> str:
         return iso
 
 
+def _deferred_until(cached: dict) -> datetime | None:
+    raw = cached.get("transcription_deferred_until", "")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except Exception:
+        return None
+
+
+def _clear_transcription_deferred(cached: dict) -> bool:
+    changed = False
+    for key in ("transcription_deferred_until", "transcription_status", "transcription_error"):
+        if key in cached:
+            cached.pop(key, None)
+            changed = True
+    return changed
+
+
 def _client() -> spotipy.Spotify:
     cache_path = str(_SPOTIFY_CACHE) if _SPOTIFY_CACHE.exists() else None
     return spotipy.Spotify(auth_manager=SpotifyOAuth(
@@ -138,14 +157,30 @@ def get_article_body(entry_id: str, drive_service=None) -> str:
     if cached.get("body"):
         return cached["body"]
 
+    deferred_until = _deferred_until(cached)
+    now = datetime.now().astimezone()
+    if deferred_until and deferred_until > now:
+        return ""
+    if deferred_until and _clear_transcription_deferred(cached):
+        _save_entry(entry_id, cached)
+
     # Podsumowanie: try Drive transcription (file may not exist yet — don't cache failure)
     if "podsumowanie" in (cached.get("from") or "").lower() and drive_service:
-        from gdrive_audio import find_episode_file, transcribe_episode
+        from gdrive_audio import TranscriptDeferredError, find_episode_file, transcribe_episode
         file_id = find_episode_file(drive_service, cached.get("subject", ""))
         if file_id:
-            transcript = transcribe_episode(drive_service, file_id)
+            try:
+                transcript = transcribe_episode(drive_service, file_id)
+            except TranscriptDeferredError as e:
+                cached["transcription_status"] = "deferred"
+                cached["transcription_deferred_until"] = e.retry_at
+                cached["transcription_error"] = e.reason
+                _save_entry(entry_id, cached)
+                print(f"[spotify] transcript deferred for {entry_id} until {e.retry_at}")
+                return ""
             if transcript:
                 cached["body"] = transcript
+                _clear_transcription_deferred(cached)
                 _save_entry(entry_id, cached)
                 return transcript
         return ""
@@ -210,7 +245,14 @@ class SpotifySource(Source):
         return sync_articles()
 
     def get_body(self, entry_id: str) -> str:
-        return get_article_body(entry_id, drive_service=self._drive_service)
+        body = get_article_body(entry_id, drive_service=self._drive_service)
+        cached = _load_entry(entry_id)
+        deferred_until = _deferred_until(cached)
+        if deferred_until and deferred_until > datetime.now().astimezone():
+            self.last_error = cached.get("transcription_error", "")
+        elif self.last_error.startswith("Transcript quota reached"):
+            self.clear_error()
+        return body
 
     def mark_done(self, entry_id: str) -> bool:
         return remove_from_saved(entry_id)
