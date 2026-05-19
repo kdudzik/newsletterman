@@ -142,7 +142,9 @@ def _sync_wyborcza() -> list[dict]:
         _set_wyborcza_status(False, "")
         return []
     try:
+        before = _cached_ids()
         items = _wyborcza.sync_articles(_wyborcza_schowek_url)
+        _log_new_entries(items, before)
         _set_wyborcza_status(True, "")
         return items
     except Exception as e:
@@ -212,6 +214,8 @@ def _summarize_entry(entry_id: str, service) -> None:
         cached["summary"] = summary
         _save_any(entry_id, cached)
         _log(f"[summarize] done: {entry_id}")
+        if entry_id not in _add_events_logged:
+            _append_queue_event("add", entry_id, cached)
         _score_entry(entry_id)
     except Exception as e:
         _log(f"[summarize] error {entry_id}: {e}")
@@ -266,21 +270,25 @@ async def _bg_sync():
     while True:
         await asyncio.sleep(60)
         try:
-            sync_newsletters(_gmail_service)
+            _before = _cached_ids()
+            _log_new_entries(sync_newsletters(_gmail_service), _before)
             if _raindrop_token:
-                _raindrop.sync_articles(_raindrop_token)
+                _before = _cached_ids()
+                _log_new_entries(_raindrop.sync_articles(_raindrop_token), _before)
             if _wyborcza_schowek_url:
                 _sync_wyborcza()
             if _youtube_enabled:
                 try:
-                    _youtube.sync_articles()
+                    _before = _cached_ids()
+                    _log_new_entries(_youtube.sync_articles(), _before)
                     _set_youtube_status(True)
                 except Exception as e:
                     _set_youtube_status(False, str(e))
                     raise
             if _spotify_enabled:
                 try:
-                    _spotify.sync_articles()
+                    _before = _cached_ids()
+                    _log_new_entries(_spotify.sync_articles(), _before)
                     _set_spotify_status(True)
                 except Exception as e:
                     _set_spotify_status(False, str(e))
@@ -293,11 +301,13 @@ async def _bg_sync():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _gmail_service
+    global _gmail_service, _add_events_logged
+    _add_events_logged = _load_add_events_logged()
     _gmail_service = get_service()
     if _raindrop_token:
         try:
-            _raindrop.sync_articles(_raindrop_token)
+            _before = _cached_ids()
+            _log_new_entries(_raindrop.sync_articles(_raindrop_token), _before)
         except Exception as e:
             _log(f"[raindrop] startup sync failed: {e}")
     if _wyborcza_schowek_url:
@@ -306,14 +316,16 @@ async def lifespan(app: FastAPI):
         _set_wyborcza_status(False, "")
     if _youtube_enabled:
         try:
-            _youtube.sync_articles()
+            _before = _cached_ids()
+            _log_new_entries(_youtube.sync_articles(), _before)
             _set_youtube_status(True)
         except Exception as e:
             _set_youtube_status(False, str(e))
             _log(f"[youtube] startup sync failed: {e}")
     if _spotify_enabled:
         try:
-            _spotify.sync_articles()
+            _before = _cached_ids()
+            _log_new_entries(_spotify.sync_articles(), _before)
             _set_spotify_status(True)
         except Exception as e:
             _set_spotify_status(False, str(e))
@@ -467,6 +479,62 @@ def _read_time_minutes(word_count) -> int:
     return max(1, round(int(word_count) / 200))
 
 
+_add_events_logged: set[str] = set()
+
+
+def _load_add_events_logged() -> set[str]:
+    import json as _json
+    path = Path(__file__).parent / ".cache" / "queue_events.jsonl"
+    ids: set[str] = set()
+    if path.exists():
+        with open(path) as f:
+            for line in f:
+                try:
+                    ev = _json.loads(line.strip())
+                    if ev.get("event") == "add":
+                        ids.add(ev["id"])
+                except Exception:
+                    pass
+    return ids
+
+
+def _cached_ids() -> set[str]:
+    cache_dir = Path(__file__).parent / ".cache"
+    if not cache_dir.exists():
+        return set()
+    ids: set[str] = set()
+    for f in cache_dir.glob("*.json"):
+        stem = f.stem
+        ids.add(stem)
+        # gmail files are stored as gmail-{bare_id} but events use bare ids
+        if stem.startswith("gmail-"):
+            ids.add(stem[len("gmail-"):])
+    return ids
+
+
+def _append_queue_event(event: str, entry_id: str, entry: dict) -> None:
+    import json as _json
+    source = entry.get("source") or "gmail"
+    minutes = _duration_minutes(entry["duration"]) if "duration" in entry \
+              else _read_time_minutes(entry.get("word_count", 0))
+    if event == "add":
+        if minutes == 0:
+            return  # defer until word_count/duration is known
+        _add_events_logged.add(entry_id)
+    record = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+              "event": event, "id": entry_id, "source": source, "minutes": minutes}
+    path = Path(__file__).parent / ".cache" / "queue_events.jsonl"
+    with open(path, "a") as f:
+        f.write(_json.dumps(record) + "\n")
+
+
+def _log_new_entries(items: list[dict], before: set[str]) -> None:
+    for item in items:
+        eid = item.get("id", "")
+        if eid and eid not in before and eid not in _add_events_logged:
+            _append_queue_event("add", eid, item)
+
+
 templates.env.filters["sender_name"] = _sender_name
 templates.env.filters["relative_date"] = _relative_date
 templates.env.filters["unescape"] = html.unescape
@@ -524,16 +592,22 @@ async def index(request: Request):
 
 @app.post("/refresh")
 async def refresh():
+    _before = _cached_ids()
     newsletters = sync_newsletters(_gmail_service)
+    _log_new_entries(newsletters, _before)
     if _raindrop_token:
+        _before = _cached_ids()
         articles = _raindrop.sync_articles(_raindrop_token)
+        _log_new_entries(articles, _before)
     else:
         articles = []
     wyborcza_articles = _sync_wyborcza() if _wyborcza_schowek_url else []
     youtube_videos = []
     if _youtube_enabled:
         try:
+            _before = _cached_ids()
             youtube_videos = _youtube.sync_articles()
+            _log_new_entries(youtube_videos, _before)
             _set_youtube_status(True)
         except Exception as e:
             _set_youtube_status(False, str(e))
@@ -541,7 +615,9 @@ async def refresh():
     spotify_episodes = []
     if _spotify_enabled:
         try:
+            _before = _cached_ids()
             spotify_episodes = _spotify.sync_articles()
+            _log_new_entries(spotify_episodes, _before)
             _set_spotify_status(True)
         except Exception as e:
             _set_spotify_status(False, str(e))
@@ -609,6 +685,7 @@ async def mark_done(message_id: str):
     ok = remove_read_later_label(message_id, _gmail_service)
     if not ok:
         raise HTTPException(status_code=404, detail="Label not found")
+    _append_queue_event("read", message_id, _load_entry(message_id))
     return {"ok": True}
 
 
@@ -617,6 +694,7 @@ async def mark_unread(message_id: str):
     ok = restore_read_later_label(message_id, _gmail_service)
     if not ok:
         raise HTTPException(status_code=404, detail="Label not found")
+    _append_queue_event("unread", message_id, _load_entry(message_id))
     return {"ok": True}
 
 
@@ -650,6 +728,7 @@ async def article_done(article_id: str):
         raise HTTPException(status_code=404, detail="Article not found")
     if not ok:
         raise HTTPException(status_code=404, detail="Article not found or move failed")
+    _append_queue_event("read", article_id, _load_any(article_id))
     return {"ok": True}
 
 
@@ -679,6 +758,7 @@ async def article_unread(article_id: str):
         raise HTTPException(status_code=404, detail="Article not found")
     if not ok:
         raise HTTPException(status_code=404, detail="Article not found")
+    _append_queue_event("unread", article_id, _load_any(article_id))
     return {"ok": True}
 
 
@@ -715,6 +795,117 @@ async def entries_status(ids: str):
                 scores["lean_html"] = f'<span class="score-badge lean-{lean.lower()}">{lean}<span class="score-tip">{_safe_escape(lean_note)}</span></span>'
         result[entry_id] = scores
     return result
+
+
+@app.get("/api/queue-history")
+async def api_queue_history():
+    import json as _json
+    from collections import defaultdict
+    path = Path(__file__).parent / ".cache" / "queue_events.jsonl"
+    if not path.exists():
+        return {"dates": [], "series": {}}
+
+    events = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    events.append(_json.loads(line))
+                except Exception:
+                    continue
+    if not events:
+        return {"dates": [], "series": {}}
+
+    events.sort(key=lambda e: e["ts"])
+    queue: dict[str, dict] = {}
+    snapshots: list[tuple[str, dict]] = []
+    cur_day = events[0]["ts"][:10]
+
+    for ev in events:
+        day = ev["ts"][:10]
+        if day != cur_day:
+            snapshots.append((cur_day, dict(queue)))
+            cur_day = day
+        eid = ev["id"]
+        if ev["event"] in ("add", "unread"):
+            queue[eid] = {"source": ev["source"], "minutes": ev["minutes"]}
+        elif ev["event"] in ("read", "delete"):
+            queue.pop(eid, None)
+    snapshots.append((cur_day, dict(queue)))
+
+    all_sources = ["gmail", "raindrop", "wyborcza", "youtube", "spotify"]
+    from datetime import date as _date, timedelta
+    earliest_event = events[0]["ts"][:10]
+    three_years_ago = str((_date.today()).replace(year=_date.today().year - 3))
+    HISTORY_START = max(earliest_event, three_years_ago)
+    end = snapshots[-1][0]
+    d = _date.fromisoformat(HISTORY_START)
+    end_d = _date.fromisoformat(end)
+    # Derive queue state at HISTORY_START by replaying all earlier events
+    snap_map_full = {day: state for day, state in snapshots}
+    last_state_pre: dict[str, dict] = {}
+    for snap_day, state in sorted(snap_map_full.items()):
+        if snap_day < HISTORY_START:
+            last_state_pre = state
+        else:
+            break
+    all_dates = []
+    while d <= end_d:
+        all_dates.append(str(d))
+        d += timedelta(days=1)
+
+    snap_map = snap_map_full
+    last_state: dict[str, dict] = last_state_pre
+    series: dict[str, list[float]] = {s: [] for s in all_sources}
+    for day in all_dates:
+        if day in snap_map:
+            last_state = snap_map[day]
+        totals: dict[str, float] = defaultdict(float)
+        for item in last_state.values():
+            totals[item["source"]] += item["minutes"]
+        for src in all_sources:
+            series[src].append(round(totals.get(src, 0) / 60, 1))
+
+    active = [s for s in all_sources if any(v > 0 for v in series[s])]
+    return {"dates": all_dates, "series": {s: series[s] for s in active}}
+
+
+@app.get("/api/queue-events")
+async def api_queue_events(date: str):
+    import json as _json
+    path = Path(__file__).parent / ".cache" / "queue_events.jsonl"
+    if not path.exists():
+        return []
+    results = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = _json.loads(line)
+            except Exception:
+                continue
+            if ev.get("ts", "")[:10] != date:
+                continue
+            entry = _load_any(ev["id"])
+            results.append({
+                "event": ev["event"],
+                "id": ev["id"],
+                "source": ev["source"],
+                "minutes": ev["minutes"],
+                "subject": entry.get("subject", ev["id"]),
+                "url": entry.get("url", entry.get("gmail_url", "")),
+                "ts": ev["ts"],
+            })
+    results.sort(key=lambda e: e["ts"])
+    return results
+
+
+@app.get("/queue-history", response_class=HTMLResponse)
+async def queue_history_page(request: Request):
+    return templates.TemplateResponse("queue_history.html", {"request": request})
 
 
 if __name__ == "__main__":

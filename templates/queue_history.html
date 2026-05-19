@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Queue History · Newsletterman</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📬</text></svg>">
+  <link rel="stylesheet" href="/static/style.css?v={{ css_version() }}">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <style>
+    .chart-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin: 1rem 0; }
+    .empty { color: var(--muted); text-align: center; padding: 3rem 0; }
+    #day-panel { margin: 0.5rem 0 2rem; }
+    #day-heading { font-weight: 600; margin-bottom: 0.5rem; color: var(--muted); font-size: .875rem; }
+    .event-row { display: flex; align-items: baseline; gap: 0.6rem; padding: 0.35rem 0; border-bottom: 1px solid var(--border); font-size: .875rem; }
+    .event-row:last-child { border-bottom: none; }
+    .ev-badge { font-size: .7rem; font-weight: 700; text-transform: uppercase; padding: 1px 5px; border-radius: 3px; flex-shrink: 0; }
+    .ev-add    { background: #dcfce7; color: #166534; }
+    .ev-read   { background: #e0e7ff; color: #3730a3; }
+    .ev-unread { background: #fef9c3; color: #854d0e; }
+    .ev-delete { background: #fee2e2; color: #991b1b; }
+    .ev-src  { color: var(--muted); flex-shrink: 0; }
+    .ev-min  { color: var(--muted); flex-shrink: 0; margin-left: auto; }
+    .ev-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ev-title a { color: var(--text); text-decoration: none; }
+    .ev-title a:hover { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-top">
+      <div>
+        <h1>📬 Newsletterman <span class="subtitle">Queue history</span></h1>
+      </div>
+      <div class="header-actions">
+        <a href="/" class="sort-btn" style="text-decoration:none">← Back</a>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div class="chart-wrap">
+      <canvas id="chart" height="80" style="cursor:pointer"></canvas>
+      <p class="empty" id="empty" style="display:none">No queue history recorded yet. Events are logged from this point on.</p>
+    </div>
+    <div id="day-panel" style="display:none">
+      <div id="day-heading"></div>
+      <div id="day-events"></div>
+    </div>
+  </main>
+  <script>
+    const COLORS = {
+      gmail:    "#4f46e5",
+      raindrop: "#059669",
+      wyborcza: "#d97706",
+      youtube:  "#dc2626",
+      spotify:  "#16a34a",
+    };
+
+    let chartInstance = null;
+    let selectedDate = null;
+
+    async function showDay(date) {
+      selectedDate = date;
+      const panel = document.getElementById("day-panel");
+      const heading = document.getElementById("day-heading");
+      const container = document.getElementById("day-events");
+      heading.textContent = date;
+      container.textContent = "Loading…";
+      panel.style.display = "";
+
+      const evs = await fetch(`/api/queue-events?date=${date}`).then(r => r.json());
+      if (!evs.length) {
+        container.textContent = "No events on this day.";
+        return;
+      }
+      const ORDER = ["add", "read", "unread", "delete"];
+      const groups = {};
+      for (const ev of evs) {
+        (groups[ev.event] = groups[ev.event] || []).push(ev);
+      }
+      for (const g of Object.values(groups)) g.sort((a, b) => b.minutes - a.minutes);
+      container.innerHTML = ORDER.filter(k => groups[k]).flatMap(action => {
+        const rows = groups[action].map(ev => {
+          const title = ev.url
+            ? `<a href="${ev.url}" target="_blank" rel="noopener">${esc(ev.subject)}</a>`
+            : esc(ev.subject);
+          const dur = ev.minutes ? `${ev.minutes} min` : "";
+          return `<div class="event-row">
+            <span class="ev-badge ev-${ev.event}">${ev.event}</span>
+            <span class="ev-src">${ev.source}</span>
+            <span class="ev-title">${title}</span>
+            <span class="ev-min">${dur}</span>
+          </div>`;
+        });
+        return [`<div style="font-size:.75rem;font-weight:700;text-transform:uppercase;color:var(--muted);margin:0.75rem 0 0.25rem">${action}</div>`, ...rows];
+      }).join("");
+    }
+
+    function esc(s) {
+      return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    }
+
+    async function load() {
+      const res = await fetch("/api/queue-history");
+      const data = await res.json();
+      if (!data.dates || data.dates.length === 0) {
+        document.getElementById("empty").style.display = "";
+        return;
+      }
+      const datasets = Object.entries(data.series).map(([src, values]) => ({
+        label: src.charAt(0).toUpperCase() + src.slice(1),
+        data: values,
+        borderColor: COLORS[src] || "#6b7280",
+        backgroundColor: COLORS[src] || "#6b7280",
+        barPercentage: 1.0,
+        categoryPercentage: 1.0,
+      }));
+      chartInstance = new Chart(document.getElementById("chart"), {
+        type: "bar",
+        data: { labels: data.dates, datasets },
+        options: {
+          responsive: true,
+          interaction: { mode: "index", intersect: false },
+          onClick(e) {
+            const pts = chartInstance.getElementsAtEventForMode(e, "index", { intersect: false }, false);
+            if (pts.length) showDay(data.dates[pts[0].index]);
+          },
+          scales: {
+            x: { stacked: true, ticks: { maxTicksLimit: 12 } },
+            y: { stacked: true, title: { display: true, text: "Hours in queue" }, beginAtZero: true },
+          },
+          plugins: {
+            legend: { position: "top" },
+            tooltip: {
+              callbacks: {
+                label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y} h`,
+                footer: items => ` Total: ${items.reduce((s, i) => s + i.parsed.y, 0).toFixed(1)} h`,
+              },
+            },
+          },
+        },
+      });
+    }
+    load();
+  </script>
+</body>
+</html>
