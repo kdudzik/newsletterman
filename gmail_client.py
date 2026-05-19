@@ -180,7 +180,7 @@ def get_newsletter_body(message_id: str, service) -> dict:
     ).execute()
     headers = {h["name"]: h["value"] for h in msg["payload"]["headers"]}
     data = {
-        "id": message_id,
+        "id": bare_id,
         "subject": headers.get("Subject", "(no subject)"),
         "from": headers.get("From", ""),
         "date": headers.get("Date", ""),
