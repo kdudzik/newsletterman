@@ -168,13 +168,14 @@ def sync_newsletters(service) -> list[dict]:
 
 
 def get_newsletter_body(message_id: str, service) -> dict:
+    bare_id = message_id[len("gmail-"):] if message_id.startswith("gmail-") else message_id
     cached = _load_entry(message_id)
     if "body" in cached:
         return {k: cached[k] for k in ("id", "subject", "from", "date", "body", "gmail_url", "word_count") if k in cached}
 
     msg = service.users().messages().get(
         userId="me",
-        id=message_id,
+        id=bare_id,
         format="full",
     ).execute()
     headers = {h["name"]: h["value"] for h in msg["payload"]["headers"]}
@@ -184,7 +185,7 @@ def get_newsletter_body(message_id: str, service) -> dict:
         "from": headers.get("From", ""),
         "date": headers.get("Date", ""),
         "body": _extract_text(msg["payload"]),
-        "gmail_url": f"https://mail.google.com/mail/u/0/#inbox/{message_id}",
+        "gmail_url": f"https://mail.google.com/mail/u/0/#inbox/{bare_id}",
     }
     data["word_count"] = len(data["body"].split())
     cached.update(data)
