@@ -8,19 +8,13 @@ from urllib.parse import urlparse
 
 import browser_cookie3
 import requests
-import trafilatura
 
-from gmail_client import _strip_html
+from source_base import (
+    Source,
+    _CACHE_DIR, _load_entry, _save_entry, _wpm_minutes,
+    _parse_ts, _extract_text, _sync_read_flags,
+)
 
-
-def _extract_text(html: str, url: str = "") -> str:
-    text = trafilatura.extract(html, url=url, include_comments=False, include_tables=False)
-    if text and len(text.split()) > 50:
-        return text
-    return _strip_html(html)
-
-
-_CACHE_DIR = Path(__file__).parent / ".cache"
 _BROWSER_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
@@ -31,33 +25,9 @@ _BAD_BODIES = {
 }
 
 
-def _cache_file(article_id: str) -> Path:
-    return _CACHE_DIR / f"{article_id}.json"
-
-
-def _load_entry(article_id: str) -> dict:
-    f = _cache_file(article_id)
-    if f.exists():
-        try:
-            return json.loads(f.read_text())
-        except Exception:
-            pass
-    return {}
-
-
 def _save_entry(article_id: str, data: dict) -> None:
     _CACHE_DIR.mkdir(exist_ok=True)
-    _cache_file(article_id).write_text(json.dumps(data, ensure_ascii=False, indent=2))
-
-
-
-def _parse_ts(rfc_date: str) -> float:
-    try:
-        from email.utils import parsedate_to_datetime
-        return parsedate_to_datetime(rfc_date).timestamp()
-    except Exception:
-        return 0.0
-
+    (_CACHE_DIR / f"{article_id}.json").write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def _session() -> requests.Session:
@@ -81,7 +51,7 @@ def list_articles_cached() -> list[dict]:
             if "subject" in entry:
                 articles.append({k: entry[k] for k in (
                     "id", "subject", "from", "date", "snippet", "summary",
-                    "read", "word_count", "relevance_score", "relevance_note",
+                    "read", "word_count", "minutes", "relevance_score", "relevance_note",
                     "challenge_score", "challenge_note", "lean", "lean_note",
                     "url", "source",
                 ) if k in entry})
@@ -158,20 +128,7 @@ def sync_articles(schowek_url: str, _cookie_file: str = "") -> list[dict]:
         if item.get("pageUrl")
     }
 
-    if _CACHE_DIR.exists():
-        for f in _CACHE_DIR.glob("wyborcza-*.json"):
-            try:
-                entry = json.loads(f.read_text())
-                if f.stem in current_ids:
-                    if entry.get("read"):
-                        entry["read"] = False
-                        f.write_text(json.dumps(entry, indent=2))
-                else:
-                    if not entry.get("read"):
-                        entry["read"] = True
-                        f.write_text(json.dumps(entry, indent=2))
-            except Exception:
-                f.unlink(missing_ok=True)
+    _sync_read_flags("wyborcza", current_ids)
 
     now_dt = datetime.now(timezone.utc)
     today = now_dt.date().isoformat()
@@ -229,11 +186,12 @@ def get_article_body(article_id: str, _cookie_file: str = "") -> str:
         html = resp.text
         body = _extract_text(html, url=url)
     except Exception as e:
-        print(f"[{datetime.now(timezone.utc).strftime("%H:%M:%S")}] [wyborcza] fetch failed for {url}: {e}")
+        print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [wyborcza] fetch failed for {url}: {e}")
         body = cached.get("snippet", "")
 
     cached["body"] = body
     cached["word_count"] = len(body.split())
+    cached["minutes"] = _wpm_minutes(cached["word_count"])
     _save_entry(article_id, cached)
     return body
 
@@ -311,3 +269,47 @@ def add_to_schowek(article_id: str, schowek_url: str, _cookie_file: str = "") ->
     cached.pop("read", None)
     _save_entry(article_id, cached)
     return True
+
+
+# --- plugin ---
+
+
+class WyborczaSource(Source):
+    prefix = "wyborcza"
+    is_article = True
+
+    def __init__(self, schowek_url: str):
+        self._schowek_url = schowek_url
+
+    def sync(self) -> list[dict]:
+        return sync_articles(self._schowek_url)
+
+    def get_body(self, entry_id: str) -> str:
+        return get_article_body(entry_id)
+
+    def mark_done(self, entry_id: str) -> bool:
+        return remove_from_schowek(entry_id, self._schowek_url)
+
+    def mark_unread_entry(self, entry_id: str) -> bool:
+        return add_to_schowek(entry_id, self._schowek_url)
+
+    def list_cached(self) -> list[dict]:
+        return list_articles_cached()
+
+    def load_entry(self, entry_id: str) -> dict:
+        return _load_entry(entry_id)
+
+    def save_entry(self, entry_id: str, data: dict) -> None:
+        _save_entry(entry_id, data)
+
+    def format_error(self, error: str) -> str:
+        if not error:
+            return ""
+        lowered = error.lower()
+        if (
+            "401" in error or "403" in error
+            or "cookie" in lowered or "unauthorized" in lowered
+            or "forbidden" in lowered or "verification" in lowered
+        ):
+            return f"Auth may have expired. Details: {error}".strip()
+        return error

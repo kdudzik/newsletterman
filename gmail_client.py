@@ -1,17 +1,15 @@
 import os
 import base64
 import json
-import re
-from email.utils import parsedate_to_datetime
 from pathlib import Path
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
+from source_base import _CACHE_DIR, _wpm_minutes, _parse_ts, _strip_html
+
 READ_LATER_LABEL = os.getenv("GMAIL_READ_LATER_LABEL", "Read later")
 _EXCLUDE_SUBJECT = os.getenv("NEWSLETTER_EXCLUDE_SUBJECT", "")
-
-_CACHE_DIR = Path(__file__).parent / ".cache"
 
 
 def _cache_file(message_id: str) -> Path:
@@ -79,11 +77,7 @@ def _find_label_id(service, name: str) -> str | None:
     return None
 
 
-def _parse_date(date_str: str) -> float:
-    try:
-        return parsedate_to_datetime(date_str).timestamp()
-    except Exception:
-        return 0.0
+_parse_date = _parse_ts
 
 
 def list_newsletters_cached() -> list[dict]:
@@ -99,8 +93,13 @@ def list_newsletters_cached() -> list[dict]:
                     continue
                 if "body" in entry and "word_count" not in entry:
                     entry["word_count"] = len(entry["body"].split())
+                    entry["minutes"] = _wpm_minutes(entry["word_count"])
                     _save_entry(entry["id"], entry)
-                newsletters.append({k: entry[k] for k in ("id", "subject", "from", "date", "snippet", "summary", "read", "word_count", "relevance_score", "relevance_note", "challenge_score", "challenge_note", "lean", "lean_note") if k in entry})
+                newsletters.append({k: entry[k] for k in (
+                    "id", "subject", "from", "date", "snippet", "summary", "read",
+                    "word_count", "minutes", "relevance_score", "relevance_note",
+                    "challenge_score", "challenge_note", "lean", "lean_note",
+                ) if k in entry})
         except Exception:
             pass
     newsletters.sort(key=lambda n: _parse_date(n.get("date", "")), reverse=True)
@@ -171,7 +170,7 @@ def get_newsletter_body(message_id: str, service) -> dict:
     bare_id = message_id[len("gmail-"):] if message_id.startswith("gmail-") else message_id
     cached = _load_entry(message_id)
     if "body" in cached:
-        return {k: cached[k] for k in ("id", "subject", "from", "date", "body", "gmail_url", "word_count") if k in cached}
+        return {k: cached[k] for k in ("id", "subject", "from", "date", "body", "gmail_url", "word_count", "minutes") if k in cached}
 
     msg = service.users().messages().get(
         userId="me",
@@ -188,6 +187,7 @@ def get_newsletter_body(message_id: str, service) -> dict:
         "gmail_url": f"https://mail.google.com/mail/u/0/#inbox/{bare_id}",
     }
     data["word_count"] = len(data["body"].split())
+    data["minutes"] = _wpm_minutes(data["word_count"])
     cached.update(data)
     _save_entry(message_id, cached)
     return data
@@ -207,17 +207,6 @@ def _extract_text(payload: dict) -> str:
         if text:
             return text
     return ""
-
-
-def _strip_html(html: str) -> str:
-    text = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL)
-    text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"&nbsp;", " ", text)
-    text = re.sub(r"&amp;", "&", text)
-    text = re.sub(r"&lt;", "<", text)
-    text = re.sub(r"&gt;", ">", text)
-    return re.sub(r"\s+", " ", text).strip()
 
 
 def restore_read_later_label(message_id: str, service) -> bool:
@@ -248,3 +237,37 @@ def remove_read_later_label(message_id: str, service) -> bool:
     cached["read"] = True
     _save_entry(message_id, cached)
     return True
+
+
+# --- plugin ---
+
+from source_base import Source
+
+
+class GmailSource(Source):
+    prefix = "gmail"
+
+    def __init__(self, service):
+        self._service = service
+
+    def sync(self) -> list[dict]:
+        return sync_newsletters(self._service)
+
+    def get_body(self, entry_id: str) -> str:
+        service = get_service()  # fresh per call — httplib2 is not thread-safe
+        return get_newsletter_body(entry_id, service).get("body", "")
+
+    def mark_done(self, entry_id: str) -> bool:
+        return remove_read_later_label(entry_id, self._service)
+
+    def mark_unread_entry(self, entry_id: str) -> bool:
+        return restore_read_later_label(entry_id, self._service)
+
+    def list_cached(self) -> list[dict]:
+        return list_newsletters_cached()
+
+    def load_entry(self, entry_id: str) -> dict:
+        return _load_entry(entry_id)
+
+    def save_entry(self, entry_id: str, data: dict) -> None:
+        _save_entry(entry_id, data)

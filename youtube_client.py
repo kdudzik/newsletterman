@@ -10,7 +10,12 @@ from pathlib import Path
 import requests
 import browser_cookie3
 
-_CACHE_DIR = Path(__file__).parent / ".cache"
+from source_base import (
+    Source,
+    _CACHE_DIR, _load_entry, _save_entry,
+    _parse_ts, _iso_to_rfc2822, _sync_read_flags,
+)
+
 _INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
 _INNERTUBE_URL = "https://www.youtube.com/youtubei/v1/browse"
 _INNERTUBE_CLIENT = {
@@ -25,38 +30,17 @@ _BROWSER_UA = (
 )
 
 
-def _cache_file(article_id: str) -> Path:
-    return _CACHE_DIR / f"{article_id}.json"
-
-
-def _load_entry(article_id: str) -> dict:
-    f = _cache_file(article_id)
-    if f.exists():
-        try:
-            return json.loads(f.read_text())
-        except Exception:
-            pass
-    return {}
-
-
-def _save_entry(article_id: str, data: dict) -> None:
-    _CACHE_DIR.mkdir(exist_ok=True)
-    _cache_file(article_id).write_text(json.dumps(data, indent=2))
-
-
-def _iso_to_rfc2822(iso: str) -> str:
+def _duration_to_minutes(duration: str) -> int:
+    """Convert HH:MM:SS or MM:SS string to total minutes."""
+    if not duration:
+        return 0
+    parts = duration.split(":")
     try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        return format_datetime(dt)
+        if len(parts) == 3:
+            return max(1, int(parts[0]) * 60 + int(parts[1]))
+        return max(1, int(parts[0]))
     except Exception:
-        return iso
-
-
-def _parse_ts(rfc_date: str) -> float:
-    try:
-        return parsedate_to_datetime(rfc_date).timestamp()
-    except Exception:
-        return 0.0
+        return 0
 
 
 def _sapisidhash(sapisid: str) -> str:
@@ -205,11 +189,9 @@ def _parse_video(raw: dict, position: int = 0) -> dict | None:
         "url": f"https://www.youtube.com/watch?v={video_id}",
         "thumbnail": thumbnail_url,
         "duration": length_text,
+        "minutes": _duration_to_minutes(length_text),
         "source": "youtube",
     }
-
-
-
 
 
 # --- public API ---
@@ -234,7 +216,7 @@ def list_articles_cached() -> list[dict]:
             if "subject" in entry:
                 articles.append({k: entry[k] for k in (
                     "id", "subject", "from", "date", "snippet", "summary",
-                    "read", "word_count", "relevance_score", "relevance_note",
+                    "read", "word_count", "minutes", "relevance_score", "relevance_note",
                     "challenge_score", "challenge_note", "lean", "lean_note",
                     "url", "thumbnail", "duration", "source",
                 ) if k in entry})
@@ -272,20 +254,7 @@ def sync_articles(_service=None) -> list[dict]:
     print(f"[youtube] sync: {len(unique)} unique videos after dedup")
     current_ids = {f"youtube-{v['videoId']}" for v in unique}
 
-    if _CACHE_DIR.exists():
-        for f in _CACHE_DIR.glob("youtube-*.json"):
-            try:
-                entry = json.loads(f.read_text())
-                if f.stem in current_ids:
-                    if entry.get("read"):
-                        entry["read"] = False
-                        f.write_text(json.dumps(entry, indent=2))
-                else:
-                    if not entry.get("read"):
-                        entry["read"] = True
-                        f.write_text(json.dumps(entry, indent=2))
-            except Exception:
-                f.unlink(missing_ok=True)
+    _sync_read_flags("youtube", current_ids)
 
     articles = []
     for position, raw in enumerate(unique):
@@ -303,6 +272,11 @@ def sync_articles(_service=None) -> list[dict]:
             # Always refresh date from live publishedTimeText (overwrite fake position-based dates)
             if parsed.get("date"):
                 cached["date"] = parsed["date"]
+                changed = True
+            # Keep minutes in sync with potentially updated duration
+            if parsed.get("minutes") and cached.get("minutes") != parsed["minutes"]:
+                cached["minutes"] = parsed["minutes"]
+                cached["duration"] = parsed["duration"]
                 changed = True
             if changed:
                 _save_entry(article_id, cached)
@@ -402,7 +376,7 @@ def _fetch_transcript(video_id: str) -> tuple[str, str]:
         text = " ".join(getattr(e, "text", "") for e in entries).strip()
         return text, preferred.language_code
     except Exception as e:
-        print(f"[{datetime.now(timezone.utc).strftime("%H:%M:%S")}] [youtube] transcript fetch failed for {video_id}: {type(e).__name__}: {e}")
+        print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [youtube] transcript fetch failed for {video_id}: {type(e).__name__}: {e}")
         return "", ""
 
 
@@ -476,3 +450,33 @@ def mark_unread(article_id: str) -> bool:
     cached.pop("read", None)
     _save_entry(article_id, cached)
     return True
+
+
+# --- plugin ---
+
+
+class YouTubeSource(Source):
+    prefix = "youtube"
+    is_video = True
+    throttle_after_body = True
+
+    def sync(self) -> list[dict]:
+        return sync_articles()
+
+    def get_body(self, entry_id: str) -> str:
+        return get_article_body(entry_id)
+
+    def mark_done(self, entry_id: str) -> bool:
+        return remove_from_watch_later(entry_id)
+
+    def mark_unread_entry(self, entry_id: str) -> bool:
+        return mark_unread(entry_id)
+
+    def list_cached(self) -> list[dict]:
+        return list_articles_cached()
+
+    def load_entry(self, entry_id: str) -> dict:
+        return _load_entry(entry_id)
+
+    def save_entry(self, entry_id: str, data: dict) -> None:
+        _save_entry(entry_id, data)

@@ -8,11 +8,11 @@
 </head>
 <body>
   <header>
-    <a href="/" class="back">← All newsletters</a>
+    <a href="/" class="back">← All items</a>
     <h1>{{ subject }}</h1>
     <p class="meta">{{ from | sender_name }} · {{ date | relative_date }}{% if word_count %} · {{ word_count | read_time }}{% endif %}</p>
     <div class="actions">
-      <a href="{{ gmail_url }}" target="_blank" class="btn btn-ghost">Open in Gmail ↗</a>
+      {% if gmail_url %}<a href="{{ gmail_url }}" target="_blank" class="btn btn-ghost">Open in Gmail ↗</a>{% elif url %}<a href="{{ url }}" target="_blank" class="btn btn-ghost">Open original ↗</a>{% endif %}
       <button id="summarize-btn" class="btn btn-primary" onclick="doSummarize('{{ id }}')">{% if summary %}Summarized ✓{% else %}Summarize{% endif %}</button>
       <button id="done-btn" class="btn btn-done" onclick="markDone('{{ id }}')">Mark as read ✓</button>
     </div>
@@ -33,7 +33,7 @@
       box.classList.remove('hidden');
       box.innerHTML = 'Thinking…';
       try {
-        const res = await fetch(`/newsletter/${id}/summarize`, { method: 'POST' });
+        const res = await fetch(`/entry/${id}/summarize`, { method: 'POST' });
         const data = await res.json();
         box.innerHTML = data.summary_html || data.summary || data.detail;
       } catch (e) {
@@ -49,7 +49,7 @@
       btn.disabled = true;
       btn.textContent = 'Removing label…';
       try {
-        await fetch(`/newsletter/${id}/done`, { method: 'POST' });
+        await fetch(`/entry/${id}/done`, { method: 'POST' });
         window.location.href = '/';
       } catch (e) {
         btn.disabled = false;

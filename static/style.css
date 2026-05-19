@@ -115,7 +115,7 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
 }
 .hidden { display: none; }
 
-.newsletter-list {
+.item-list {
   list-style: none;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
@@ -123,7 +123,7 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
   align-items: start;
 }
 
-.newsletter-item { display: flex; }
+.item { display: flex; }
 
 .card {
   position: relative;
@@ -244,7 +244,7 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
 .card:hover .card-open-panel { opacity: 1; }
 .card-open-panel:hover { background: var(--bg); color: var(--accent); }
 
-@media (max-width: 480px) { .newsletter-list { grid-template-columns: 1fr; } }
+@media (max-width: 480px) { .item-list { grid-template-columns: 1fr; } }
 
 .subject { font-weight: 600; font-size: .95rem; }
 .gmail-link {

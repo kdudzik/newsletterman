@@ -8,7 +8,11 @@ from pathlib import Path
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
-_CACHE_DIR = Path(__file__).parent / ".cache"
+from source_base import (
+    Source,
+    _CACHE_DIR, _load_entry, _save_entry,
+    _parse_ts,
+)
 
 
 def _clean_description(text: str) -> str:
@@ -18,25 +22,6 @@ def _clean_description(text: str) -> str:
     return text.strip()
 _SPOTIFY_CACHE = Path(__file__).parent.parent / "spotify-export" / ".cache"
 _SCOPE = "user-library-read user-library-modify user-read-playback-position"
-
-
-def _cache_file(entry_id: str) -> Path:
-    return _CACHE_DIR / f"{entry_id}.json"
-
-
-def _load_entry(entry_id: str) -> dict:
-    f = _cache_file(entry_id)
-    if f.exists():
-        try:
-            return json.loads(f.read_text())
-        except Exception:
-            pass
-    return {}
-
-
-def _save_entry(entry_id: str, data: dict) -> None:
-    _CACHE_DIR.mkdir(exist_ok=True)
-    _cache_file(entry_id).write_text(json.dumps(data, indent=2))
 
 
 def _iso_to_rfc2822(iso: str) -> str:
@@ -50,13 +35,6 @@ def _iso_to_rfc2822(iso: str) -> str:
         return format_datetime(dt)
     except Exception:
         return iso
-
-
-def _parse_ts(rfc_date: str) -> float:
-    try:
-        return parsedate_to_datetime(rfc_date).timestamp()
-    except Exception:
-        return 0.0
 
 
 def _client() -> spotipy.Spotify:
@@ -88,20 +66,20 @@ def sync_articles(_service=None) -> list[dict]:
             seen_ids.add(entry_id)
 
             show = ep.get("show", {})
-            title = ep.get("name", "(no title)")
-            show_name = show.get("name", "")
-            release_date = ep.get("release_date", "")
+            title = ep.get("name") or "(no title)"
+            show_name = show.get("name") or ""
+            release_date = ep.get("release_date") or ""
             date_rfc = _iso_to_rfc2822(release_date) if release_date else format_datetime(datetime.now(timezone.utc))
-            duration_ms = ep.get("duration_ms", 0)
+            duration_ms = ep.get("duration_ms") or 0
             duration_s = duration_ms // 1000
             duration_min = duration_s // 60
-            description = _clean_description(ep.get("description", ""))
+            description = _clean_description(ep.get("description") or "")
             url = ep.get("external_urls", {}).get("spotify", f"https://open.spotify.com/episode/{episode_id}")
             images = ep.get("images") or show.get("images") or []
             thumbnail = images[0]["url"] if images else ""
 
             languages = ep.get("languages") or []
-            language = languages[0].lower() if languages else ""
+            language = (languages[0] or "").lower() if languages else ""
 
             entry = {
                 "id": entry_id,
@@ -112,6 +90,7 @@ def sync_articles(_service=None) -> list[dict]:
                 "url": url,
                 "thumbnail": thumbnail,
                 "duration": f"{duration_min}:{duration_s % 60:02d}" if duration_min else "",
+                "minutes": max(1, duration_min) if duration_s > 0 else 0,
                 "source": "spotify",
                 "episode_id": episode_id,
                 "language": language,
@@ -140,7 +119,7 @@ def list_articles_cached() -> list[dict]:
         if "subject" in entry:
             entries.append({k: entry[k] for k in (
                 "id", "subject", "from", "date", "snippet", "summary",
-                "url", "thumbnail", "duration", "source",
+                "url", "thumbnail", "duration", "minutes", "source",
                 "relevance_score", "relevance_note",
                 "challenge_score", "challenge_note",
                 "lean", "lean_note",
@@ -193,3 +172,33 @@ def mark_unread(entry_id: str) -> bool:
     cached.pop("read", None)
     _save_entry(entry_id, cached)
     return True
+
+
+# --- plugin ---
+
+
+class SpotifySource(Source):
+    prefix = "spotify"
+    is_podcast = True
+    throttle_after_body = True
+
+    def sync(self) -> list[dict]:
+        return sync_articles()
+
+    def get_body(self, entry_id: str) -> str:
+        return get_article_body(entry_id)
+
+    def mark_done(self, entry_id: str) -> bool:
+        return remove_from_saved(entry_id)
+
+    def mark_unread_entry(self, entry_id: str) -> bool:
+        return mark_unread(entry_id)
+
+    def list_cached(self) -> list[dict]:
+        return list_articles_cached()
+
+    def load_entry(self, entry_id: str) -> dict:
+        return _load_entry(entry_id)
+
+    def save_entry(self, entry_id: str, data: dict) -> None:
+        _save_entry(entry_id, data)

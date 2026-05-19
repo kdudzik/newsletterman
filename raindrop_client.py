@@ -9,19 +9,13 @@ from urllib.parse import urlparse
 import threading
 
 import requests
-import trafilatura
 
-from gmail_client import _strip_html
+from source_base import (
+    Source,
+    _CACHE_DIR, _load_entry, _save_entry, _wpm_minutes,
+    _parse_ts, _iso_to_rfc2822, _extract_text, _sync_read_flags,
+)
 
-
-def _extract_text(html: str, url: str = "") -> str:
-    """Extract main article text using trafilatura, falling back to regex strip."""
-    text = trafilatura.extract(html, url=url, include_comments=False, include_tables=False)
-    if text and len(text.split()) > 50:
-        return text
-    return _strip_html(html)
-
-_CACHE_DIR = Path(__file__).parent / ".cache"
 _API_BASE = "https://api.raindrop.io/rest/v1"
 _UNSORTED_ID = -1
 _BROWSER_UA = (
@@ -33,42 +27,6 @@ _BAD_REDDIT_BODIES = {
     "Reddit - Please wait for verification",
     "Please wait for verification",
 }
-
-
-def _cache_file(article_id: str) -> Path:
-    return _CACHE_DIR / f"{article_id}.json"
-
-
-def _load_entry(article_id: str) -> dict:
-    f = _cache_file(article_id)
-    if f.exists():
-        try:
-            return json.loads(f.read_text())
-        except Exception:
-            pass
-    return {}
-
-
-def _save_entry(article_id: str, data: dict) -> None:
-    _CACHE_DIR.mkdir(exist_ok=True)
-    _cache_file(article_id).write_text(json.dumps(data, indent=2))
-
-
-def _iso_to_rfc2822(iso: str) -> str:
-    """Convert ISO 8601 date string to RFC 2822 format for compatibility with date filters."""
-    try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        return format_datetime(dt)
-    except Exception:
-        return iso
-
-
-def _parse_ts(rfc_date: str) -> float:
-    try:
-        from email.utils import parsedate_to_datetime
-        return parsedate_to_datetime(rfc_date).timestamp()
-    except Exception:
-        return 0.0
 
 
 def _headers(token: str) -> dict:
@@ -180,7 +138,7 @@ def list_articles_cached() -> list[dict]:
             if "subject" in entry:
                 articles.append({k: entry[k] for k in (
                     "id", "subject", "from", "date", "snippet", "summary",
-                    "read", "word_count", "relevance_score", "relevance_note",
+                    "read", "word_count", "minutes", "relevance_score", "relevance_note",
                     "challenge_score", "challenge_note", "lean", "lean_note",
                     "url", "source",
                 ) if k in entry})
@@ -202,20 +160,7 @@ def sync_articles(token: str) -> list[dict]:
     items = resp.json().get("items", [])
     current_ids = {f"raindrop-{item['_id']}" for item in items}
 
-    if _CACHE_DIR.exists():
-        for f in _CACHE_DIR.glob("raindrop-*.json"):
-            try:
-                entry = json.loads(f.read_text())
-                if f.stem in current_ids:
-                    if entry.get("read"):
-                        entry["read"] = False
-                        f.write_text(json.dumps(entry, indent=2))
-                else:
-                    if not entry.get("read"):
-                        entry["read"] = True
-                        f.write_text(json.dumps(entry, indent=2))
-            except Exception:
-                f.unlink(missing_ok=True)
+    _sync_read_flags("raindrop", current_ids)
 
     articles = []
     for item in items:
@@ -251,7 +196,7 @@ def _prefetch_word_counts(article_ids: list[str]) -> None:
         try:
             get_article_body(article_id)
         except Exception as e:
-            print(f"[{datetime.now(timezone.utc).strftime("%H:%M:%S")}] [raindrop] prefetch failed for {article_id}: {e}")
+            print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [raindrop] prefetch failed for {article_id}: {e}")
 
 
 def get_article_body(article_id: str) -> str:
@@ -271,6 +216,7 @@ def get_article_body(article_id: str) -> str:
         body = (reddit or {}).get("body", "")
         cached["body"] = body
         cached["word_count"] = len(body.split())
+        cached["minutes"] = _wpm_minutes(cached["word_count"])
         if reddit:
             if reddit.get("subject"):
                 cached["subject"] = reddit["subject"]
@@ -289,11 +235,12 @@ def get_article_body(article_id: str) -> str:
         resp.raise_for_status()
         body = _extract_text(resp.text, url=url)
     except Exception as e:
-        print(f"[{datetime.now(timezone.utc).strftime("%H:%M:%S")}] [raindrop] fetch failed for {url}: {e}")
+        print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [raindrop] fetch failed for {url}: {e}")
         body = cached.get("snippet", "")
 
     cached["body"] = body
     cached["word_count"] = len(body.split())
+    cached["minutes"] = _wpm_minutes(cached["word_count"])
     _save_entry(article_id, cached)
     return body
 
@@ -332,7 +279,7 @@ def move_to_archive(article_id: str, token: str) -> bool:
             timeout=10,
         ).raise_for_status()
     except Exception as e:
-        print(f"[{datetime.now(timezone.utc).strftime("%H:%M:%S")}] [raindrop] move_to_archive error: {e}")
+        print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [raindrop] move_to_archive error: {e}")
         return False
     cached["read"] = True
     _save_entry(article_id, cached)
@@ -357,3 +304,35 @@ def mark_unread(article_id: str, token: str) -> bool:
     cached.pop("read", None)
     _save_entry(article_id, cached)
     return True
+
+
+# --- plugin ---
+
+
+class RaindropSource(Source):
+    prefix = "raindrop"
+    is_article = True
+
+    def __init__(self, token: str):
+        self._token = token
+
+    def sync(self) -> list[dict]:
+        return sync_articles(self._token)
+
+    def get_body(self, entry_id: str) -> str:
+        return get_article_body(entry_id)
+
+    def mark_done(self, entry_id: str) -> bool:
+        return move_to_archive(entry_id, self._token)
+
+    def mark_unread_entry(self, entry_id: str) -> bool:
+        return mark_unread(entry_id, self._token)
+
+    def list_cached(self) -> list[dict]:
+        return list_articles_cached()
+
+    def load_entry(self, entry_id: str) -> dict:
+        return _load_entry(entry_id)
+
+    def save_entry(self, entry_id: str, data: dict) -> None:
+        _save_entry(entry_id, data)
