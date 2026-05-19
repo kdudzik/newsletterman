@@ -1,4 +1,4 @@
-"""One-shot script to obtain a refresh token covering Gmail + YouTube scopes.
+"""One-shot script to obtain a refresh token covering Gmail + YouTube + Drive scopes.
 
 Run with:  .venv/bin/python get_token.py
 A browser window will open for Google consent. After approval, the new
@@ -15,6 +15,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
 ]
 
 client_config = {

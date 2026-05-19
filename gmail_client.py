@@ -57,16 +57,8 @@ def _save_cache(cache: dict) -> None:
 
 
 def get_service():
-    creds = Credentials(
-        token=None,
-        refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
-        client_id=os.environ["GOOGLE_CLIENT_ID"],
-        client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
-        token_uri="https://oauth2.googleapis.com/token",
-        scopes=["https://www.googleapis.com/auth/gmail.modify"],
-    )
-    creds.refresh(Request())
-    return build("gmail", "v1", credentials=creds)
+    from google_auth import build_google_service
+    return build_google_service("gmail", "v1", "https://www.googleapis.com/auth/gmail.modify")
 
 
 def _find_label_id(service, name: str) -> str | None:

@@ -12,3 +12,5 @@ trafilatura
 youtube-transcript-api
 browser-cookie3
 spotipy
+groq
+pydub

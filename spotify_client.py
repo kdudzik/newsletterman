@@ -131,8 +131,26 @@ def list_articles_cached() -> list[dict]:
     return entries
 
 
-def get_article_body(entry_id: str) -> str:
+def get_article_body(entry_id: str, drive_service=None) -> str:
     cached = _load_entry(entry_id)
+
+    # Return cached transcript if already fetched
+    if cached.get("body"):
+        return cached["body"]
+
+    # Podsumowanie: try Drive transcription (file may not exist yet — don't cache failure)
+    if "podsumowanie" in (cached.get("from") or "").lower() and drive_service:
+        from gdrive_audio import find_episode_file, transcribe_episode
+        file_id = find_episode_file(drive_service, cached.get("subject", ""))
+        if file_id:
+            transcript = transcribe_episode(drive_service, file_id)
+            if transcript:
+                cached["body"] = transcript
+                _save_entry(entry_id, cached)
+                return transcript
+        return ""
+
+    # Fallback: Spotify description
     description = cached.get("description", "")
     if not description:
         episode_id = cached.get("episode_id", entry_id.removeprefix("spotify-"))
@@ -185,11 +203,14 @@ class SpotifySource(Source):
     is_podcast = True
     throttle_after_body = True
 
+    def __init__(self, drive_service=None):
+        self._drive_service = drive_service
+
     def sync(self) -> list[dict]:
         return sync_articles()
 
     def get_body(self, entry_id: str) -> str:
-        return get_article_body(entry_id)
+        return get_article_body(entry_id, drive_service=self._drive_service)
 
     def mark_done(self, entry_id: str) -> bool:
         return remove_from_saved(entry_id)

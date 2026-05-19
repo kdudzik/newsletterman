@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 
 from source_base import registry
 from gmail_client import get_service, GmailSource
+from google_auth import build_google_service
 from raindrop_client import RaindropSource
 from wyborcza_client import WyborczaSource
 from youtube_client import YouTubeSource, build_service as _yt_build_service
@@ -45,10 +46,6 @@ def _is_title_only_summary(cached: dict) -> bool:
     summary = (cached.get("summary") or "").strip()
     subject = (cached.get("subject") or "").strip()
     if not summary or summary == subject:
-        return True
-    # Podsumowanie tygodnia episodes have no Spotify description — their summaries
-    # are just a lightly-reworded version of the title, not real content.
-    if "podsumowanie tygodnia" in (cached.get("from") or "").lower():
         return True
     return False
 
@@ -105,11 +102,14 @@ def _summarize_entry(entry_id: str) -> None:
     try:
         source = registry.for_entry(entry_id)
         cached = source.load_entry(entry_id)
-        if cached.get("summary"):
+        has_summary = bool(cached.get("summary"))
+        if has_summary and not _is_title_only_summary(cached):
             _score_entry(entry_id)
             return
         body = source.get_body(entry_id)
         if not body:
+            if has_summary:
+                _score_entry(entry_id)
             return
         cached = source.load_entry(entry_id)
         subject = cached.get("subject", "")
@@ -229,7 +229,14 @@ async def lifespan(app: FastAPI):
 
     if os.getenv("SPOTIFY_ENABLED", "").lower() in ("1", "true", "yes"):
         try:
-            registry.register(SpotifySource())
+            try:
+                drive_service = build_google_service(
+                    "drive", "v3", "https://www.googleapis.com/auth/drive.readonly"
+                )
+            except Exception as e:
+                _log(f"[drive] not available (transcription disabled): {e}")
+                drive_service = None
+            registry.register(SpotifySource(drive_service=drive_service))
         except Exception as e:
             _log(f"[spotify] not available: {e}")
 
@@ -533,7 +540,7 @@ async def entry_detail(request: Request, entry_id: str):
 async def entry_summarize(entry_id: str):
     source = registry.for_entry(entry_id)
     cached = source.load_entry(entry_id)
-    if cached.get("summary"):
+    if cached.get("summary") and not _is_title_only_summary(cached):
         return {"summary": cached["summary"]}
     loop = asyncio.get_event_loop()
     body = await loop.run_in_executor(None, source.get_body, entry_id)
@@ -724,6 +731,7 @@ async def api_queue_events(date: str):
                 "source": ev["source"],
                 "minutes": ev["minutes"],
                 "subject": entry.get("subject", ev["id"]),
+                "author": _sender_name(entry.get("from", "")) if entry.get("from") else "",
                 "url": entry.get("url", entry.get("gmail_url", "")),
                 "ts": ev["ts"],
             })
