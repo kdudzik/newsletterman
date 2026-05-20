@@ -67,20 +67,31 @@ def _extract_text(html: str, url: str = "") -> str:
     return _strip_html(html)
 
 
-def _sync_read_flags(prefix: str, current_ids: set) -> None:
-    """Mark cached entries as read/unread based on whether they appear in current_ids."""
+def _sync_status_flags(prefix: str, current_ids: set) -> None:
+    """Sync entry status based on whether they appear in current_ids.
+
+    Entries still present in source: clear status (back to inbox) only if they had none.
+    Entries gone from source: set status=consumed only if they have no explicit status yet.
+    """
     if not _CACHE_DIR.exists():
         return
     for f in _CACHE_DIR.glob(f"{prefix}-*.json"):
         try:
             entry = json.loads(f.read_text())
             if f.stem in current_ids:
+                changed = False
                 if entry.get("read"):
-                    entry["read"] = False
+                    del entry["read"]
+                    changed = True
+                if entry.get("status"):
+                    del entry["status"]
+                    changed = True
+                if changed:
                     f.write_text(json.dumps(entry, indent=2))
             else:
-                if not entry.get("read"):
-                    entry["read"] = True
+                if not entry.get("status"):
+                    entry.pop("read", None)
+                    entry["status"] = "consumed"
                     f.write_text(json.dumps(entry, indent=2))
         except Exception:
             f.unlink(missing_ok=True)
@@ -101,10 +112,22 @@ class Source(ABC):
     def get_body(self, entry_id: str) -> str: ...
 
     @abstractmethod
-    def mark_done(self, entry_id: str) -> bool: ...
+    def mark_consumed(self, entry_id: str) -> bool: ...
+
+    def _external_consume(self, entry_id: str) -> None:
+        """Trigger the external API action that removes the entry from the source (e.g. remove label, archive). Called by mark_skipped only when the entry is not already done."""
+
+    def mark_skipped(self, entry_id: str) -> bool:
+        cached = self.load_entry(entry_id)
+        if cached.get("status") not in ("consumed", "skipped"):
+            self._external_consume(entry_id)
+        cached.pop("read", None)
+        cached["status"] = "skipped"
+        self.save_entry(entry_id, cached)
+        return True
 
     @abstractmethod
-    def mark_unread_entry(self, entry_id: str) -> bool: ...
+    def mark_restored(self, entry_id: str) -> bool: ...
 
     @abstractmethod
     def list_cached(self) -> list[dict]: ...

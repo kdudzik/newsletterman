@@ -12,7 +12,7 @@ import requests
 from source_base import (
     Source,
     _CACHE_DIR, _load_entry, _save_entry, _wpm_minutes,
-    _parse_ts, _extract_text, _sync_read_flags,
+    _parse_ts, _extract_text, _sync_status_flags,
 )
 
 _BROWSER_UA = (
@@ -51,7 +51,7 @@ def list_articles_cached() -> list[dict]:
             if "subject" in entry:
                 articles.append({k: entry[k] for k in (
                     "id", "subject", "from", "date", "snippet", "summary",
-                    "read", "word_count", "minutes", "relevance_score", "relevance_note",
+                    "status", "word_count", "minutes", "relevance_score", "relevance_note",
                     "challenge_score", "challenge_note", "lean", "lean_note",
                     "trust_score", "trust_note",
                     "url", "source",
@@ -129,7 +129,7 @@ def sync_articles(schowek_url: str, _cookie_file: str = "") -> list[dict]:
         if item.get("pageUrl")
     }
 
-    _sync_read_flags("wyborcza", current_ids)
+    _sync_status_flags("wyborcza", current_ids)
 
     now_dt = datetime.now(timezone.utc)
     today = now_dt.date().isoformat()
@@ -197,20 +197,22 @@ def get_article_body(article_id: str, _cookie_file: str = "") -> str:
     return body
 
 
-def mark_read_local(article_id: str) -> bool:
-    cached = _load_entry(article_id)
-    if not cached:
-        return False
-    cached["read"] = True
-    _save_entry(article_id, cached)
-    return True
-
-
-def mark_unread_local(article_id: str) -> bool:
+def mark_consumed_local(article_id: str) -> bool:
     cached = _load_entry(article_id)
     if not cached:
         return False
     cached.pop("read", None)
+    cached["status"] = "consumed"
+    _save_entry(article_id, cached)
+    return True
+
+
+def mark_restored_local(article_id: str) -> bool:
+    cached = _load_entry(article_id)
+    if not cached:
+        return False
+    cached.pop("read", None)
+    cached.pop("status", None)
     _save_entry(article_id, cached)
     return True
 
@@ -237,7 +239,8 @@ def remove_from_schowek(article_id: str, schowek_url: str, _cookie_file: str = "
     )
     resp.raise_for_status()
 
-    cached["read"] = True
+    cached.pop("read", None)
+    cached["status"] = "consumed"
     _save_entry(article_id, cached)
     return True
 
@@ -268,6 +271,7 @@ def add_to_schowek(article_id: str, schowek_url: str, _cookie_file: str = "") ->
 
     cached["page_id"] = page_id
     cached.pop("read", None)
+    cached.pop("status", None)
     _save_entry(article_id, cached)
     return True
 
@@ -288,10 +292,13 @@ class WyborczaSource(Source):
     def get_body(self, entry_id: str) -> str:
         return get_article_body(entry_id)
 
-    def mark_done(self, entry_id: str) -> bool:
+    def mark_consumed(self, entry_id: str) -> bool:
         return remove_from_schowek(entry_id, self._schowek_url)
 
-    def mark_unread_entry(self, entry_id: str) -> bool:
+    def _external_consume(self, entry_id: str) -> None:
+        remove_from_schowek(entry_id, self._schowek_url)
+
+    def mark_restored(self, entry_id: str) -> bool:
         return add_to_schowek(entry_id, self._schowek_url)
 
     def list_cached(self) -> list[dict]:

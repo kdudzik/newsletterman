@@ -87,7 +87,7 @@ def list_newsletters_cached() -> list[dict]:
                     entry["minutes"] = _wpm_minutes(entry["word_count"])
                     _save_entry(entry["id"], entry)
                 newsletters.append({k: entry[k] for k in (
-                    "id", "subject", "from", "date", "snippet", "summary", "read",
+                    "id", "subject", "from", "date", "snippet", "summary", "status",
                     "word_count", "minutes", "relevance_score", "relevance_note",
                     "challenge_score", "challenge_note", "lean", "lean_note",
                     "trust_score", "trust_note",
@@ -118,12 +118,19 @@ def sync_newsletters(service) -> list[dict]:
             try:
                 entry = json.loads(f.read_text())
                 if bare_id in current_bare_ids:
+                    changed = False
                     if entry.get("read"):
-                        entry["read"] = False
+                        del entry["read"]
+                        changed = True
+                    if entry.get("status"):
+                        del entry["status"]
+                        changed = True
+                    if changed:
                         f.write_text(json.dumps(entry, indent=2))
                 else:
-                    if not entry.get("read"):
-                        entry["read"] = True
+                    if not entry.get("status"):
+                        entry.pop("read", None)
+                        entry["status"] = "consumed"
                         f.write_text(json.dumps(entry, indent=2))
             except Exception:
                 f.unlink(missing_ok=True)
@@ -215,6 +222,7 @@ def restore_read_later_label(message_id: str, service) -> bool:
     ).execute()
     cached = _load_entry(message_id)
     cached.pop("read", None)
+    cached.pop("status", None)
     _save_entry(message_id, cached)
     return True
 
@@ -229,7 +237,8 @@ def remove_read_later_label(message_id: str, service) -> bool:
         body={"removeLabelIds": [label_id, "UNREAD"]},
     ).execute()
     cached = _load_entry(message_id)
-    cached["read"] = True
+    cached.pop("read", None)
+    cached["status"] = "consumed"
     _save_entry(message_id, cached)
     return True
 
@@ -257,12 +266,17 @@ class GmailSource(Source):
         service = get_service()  # fresh per call — httplib2 is not thread-safe
         return get_newsletter_body(entry_id, service).get("body", "")
 
-    def mark_done(self, entry_id: str) -> bool:
+    def mark_consumed(self, entry_id: str) -> bool:
         service = self._service_for_actions()
         self._service = service
         return remove_read_later_label(entry_id, service)
 
-    def mark_unread_entry(self, entry_id: str) -> bool:
+    def _external_consume(self, entry_id: str) -> None:
+        service = self._service_for_actions()
+        self._service = service
+        remove_read_later_label(entry_id, service)
+
+    def mark_restored(self, entry_id: str) -> bool:
         service = self._service_for_actions()
         self._service = service
         return restore_read_later_label(entry_id, service)

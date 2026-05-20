@@ -10,10 +10,10 @@
   <header>
     <div class="header-top">
       <div>
-        {% set unread_items = items | rejectattr('read', 'equalto', true) | list %}
-        {% set unread_count = unread_items | length %}
-        {% set total_mins = namespace(v=0) %}{% for item in unread_items %}{% set total_mins.v = total_mins.v + item.get('minutes', 0) %}{% endfor %}
-        <h1>📬 Newsletterman <span class="subtitle" id="subtitle">{{ unread_count }} items · <span id="total-time">{{ total_mins.v // 60 }} h {{ '%02d' | format(total_mins.v % 60) }} min</span></span></h1>
+        {% set inbox_items = items | rejectattr('status', 'defined') | list %}
+        {% set inbox_count = inbox_items | length %}
+        {% set total_mins = namespace(v=0) %}{% for item in inbox_items %}{% set total_mins.v = total_mins.v + item.get('minutes', 0) %}{% endfor %}
+        <h1>📬 Newsletterman <span class="subtitle" id="subtitle">{{ inbox_count }} items · <span id="total-time">{{ total_mins.v // 60 }} h {{ '%02d' | format(total_mins.v % 60) }} min</span></span></h1>
       </div>
       <div class="header-actions">
         <div class="sort-group" role="group" aria-label="Sort order">
@@ -28,7 +28,11 @@
           <button class="sort-btn" data-sort="value" onclick="setSort('value')">Best value</button>
           {% endif %}
         </div>
-        <button class="sort-btn" id="view-toggle-btn" onclick="toggleView()">Go to archive</button>
+        <select id="view-select" class="sort-btn" onchange="setView(this.value)" style="cursor:pointer">
+          <option value="inbox">Inbox</option>
+          <option value="consumed">Consumed</option>
+          <option value="skipped">Skipped</option>
+        </select>
         <a href="/queue-history" class="sort-btn" style="text-decoration:none">History</a>
         <button id="refresh-btn" class="sort-btn" onclick="doRefresh()">Refresh</button>
       </div>
@@ -109,7 +113,10 @@
     <ul class="item-list" id="item-list">
       {% for n in items %}
       {% set has_url = n.get('source') in ['raindrop', 'wyborcza', 'youtube', 'spotify'] %}
-      {% set _title_only = (n.get('summary','') == n.get('subject','') and n.get('summary')) or 'podsumowanie tygodnia' in n.get('from','').lower() %}
+      {% set _is_transcript_show = n.get('source') == 'spotify' and 'podsumowanie tygodnia' in n.get('from','').lower() %}
+      {% set _title_only = (n.get('summary','') == n.get('subject','') and n.get('summary')) %}
+      {% set _transcribing = n.get('transcription_status') == 'running' %}
+      {% set _awaiting_transcript = _is_transcript_show and not n.get('summary') and not _transcribing %}
       {% set _has_scores = ('relevance_score' in n or 'lean' in n or 'trust_score' in n) %}
       {% set _rs = n.relevance_score if 'relevance_score' in n else none %}
       {% set _cs = n.challenge_score if 'challenge_score' in n else none %}
@@ -122,7 +129,8 @@
         {% set _quality_pct = '' %}
         {% set _value_pct = '' %}
       {% endif %}
-      <li class="item" data-id="{{ n.id }}" data-sender="{{ n.from | sender_name }}" data-ts="{{ n.date | date_ts }}" data-read="{{ 'true' if n.read else 'false' }}" data-mins="{{ _mins }}" data-relevance="{{ _rs if _rs is not none else '' }}" data-challenge="{{ _cs if _cs is not none else '' }}" data-lean="{{ n.lean if 'lean' in n else '' }}" data-trust="{{ _ts if _ts is not none else '' }}" data-value="{{ _value_pct }}" data-source="{{ n.source if 'source' in n else 'gmail' }}" data-pending="{{ 'true' if (not n.summary or (not _has_scores and not _title_only)) else 'false' }}">
+      {% set _status = n.get('status', 'inbox') %}
+      <li class="item" data-id="{{ n.id }}" data-sender="{{ n.from | sender_name }}" data-ts="{{ n.date | date_ts }}" data-status="{{ _status }}" data-mins="{{ _mins }}" data-relevance="{{ _rs if _rs is not none else '' }}" data-challenge="{{ _cs if _cs is not none else '' }}" data-lean="{{ n.lean if 'lean' in n else '' }}" data-trust="{{ _ts if _ts is not none else '' }}" data-value="{{ _value_pct }}" data-source="{{ n.source if 'source' in n else 'gmail' }}" data-pending="{{ 'true' if (not n.summary or (not _has_scores and not _title_only)) else 'false' }}">
         <div class="card{{ ' card--has-thumbnail' if n.get('thumbnail') else '' }}">
           <div class="card-link">
             <div class="card-header">
@@ -136,19 +144,51 @@
                 <span class="meta">{% if n.get('source') == 'youtube' %}<span class="source-badge" title="YouTube video">▶</span> {% elif n.get('source') == 'spotify' %}<span class="source-badge" title="Spotify podcast">♫</span> {% elif has_url %}<span class="source-badge" title="Saved item">🔖</span> {% endif %}{{ n.from | sender_name }} · {{ n.date | relative_date }}{% if _mins %} · <span class="read-time read-time-{{ 'long' if _mins >= 15 else ('medium' if _mins >= 8 else 'short') }}">{% if n.get('duration') %}{{ n.duration | duration_min }}{% else %}{{ n.word_count | read_time }}{% endif %}</span>{% endif %}<span class="js-scores">{% if 'relevance_score' in n or 'lean' in n %} · <span class="score-badges">{% if 'relevance_score' in n %}<span class="score-badge relevance-{{ 'high' if n.relevance_score >= 7 else ('mid' if n.relevance_score >= 4 else 'low') }}">↑ {{ n.relevance_score }}<span class="score-tip">{{ n.relevance_note }}</span></span><span class="score-badge challenge-{{ 'high' if n.challenge_score >= 7 else ('mid' if n.challenge_score >= 4 else 'low') }}">⚡ {{ n.challenge_score }}<span class="score-tip">{{ n.challenge_note }}</span></span>{% endif %}{% if 'lean' in n %}<span class="score-badge lean-{{ n.lean | lower }}">{{ n.lean }}<span class="score-tip">{{ n.lean_note }}</span></span>{% endif %}{% if 'trust_score' in n %}<span class="score-badge trust-{{ 'high' if n.trust_score >= 7 else ('mid' if n.trust_score >= 4 else 'low') }}">🛡 {{ n.trust_score }}<span class="score-tip">{{ n.trust_note }}</span></span>{% endif %}{% if _quality_pct != '' %}<span class="score-badge value-badge">★ {{ _quality_pct }}%</span>{% endif %}</span>{% elif n.summary and not _title_only %}  · <span class="score-badges-loading"><span></span><span></span><span></span></span>{% endif %}</span></span>
               </div>
             </div>
-            {% if n.summary %}<div class="snippet summary-snippet js-summary">{{ n.summary | markdown_summary }}</div>{% else %}<div class="snippet-loading js-summary" aria-label="Loading summary"><span></span><span></span><span></span></div>{% endif %}
+            {% if n.summary %}
+            <div class="snippet summary-snippet js-summary">{{ n.summary | markdown_summary }}</div>
+            {% elif _transcribing %}
+            <div class="snippet summary-snippet js-summary">Transcribing podcast audio for this episode.</div>
+            {% elif _awaiting_transcript %}
+            <div class="snippet summary-snippet js-summary">{% if n.get('transcription_deferred_until') %}Waiting for transcript retry.{{ ' ' }}{{ n.get('transcription_error', '') }}{% else %}Waiting for podcast transcript before summary is generated.{% endif %}</div>
+            {% else %}
+            <div class="snippet-loading js-summary" aria-label="Loading summary"><span></span><span></span><span></span></div>
+            {% endif %}
           </div>
           {% if has_url %}
           <a class="card-open-panel" href="{{ n.url }}" target="_blank" rel="noopener">Open <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path fill-rule="evenodd" d="M4.75 2a.75.75 0 0 0 0 1.5h5.44L2.97 10.72a.75.75 0 1 0 1.06 1.06L11.25 4.56v5.44a.75.75 0 0 0 1.5 0V2.75A.75.75 0 0 0 12 2H4.75Z" clip-rule="evenodd"/></svg></a>
           {% else %}
           <a class="card-open-panel" href="/entry/{{ n.id }}">Open <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path fill-rule="evenodd" d="M8 1a.75.75 0 0 1 .75.75v6.19l1.97-1.97a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.03a.75.75 0 0 1 1.06-1.06l1.97 1.97V1.75A.75.75 0 0 1 8 1ZM1.5 13.25a.75.75 0 0 1 .75-.75h11.5a.75.75 0 0 1 0 1.5H2.25a.75.75 0 0 1-.75-.75Z" clip-rule="evenodd"/></svg></a>
           {% endif %}
-          <button class="card-icon-btn card-corner-btn card-unread-btn" data-id="{{ n.id }}" data-source="{{ n.source if 'source' in n else 'gmail' }}" title="Mark as unread" style="{{ 'display:none' if not n.read else '' }}">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path d="M3 4a2 2 0 0 0-2 2v1.161l8.441 4.221a1.25 1.25 0 0 0 1.118 0L19 7.162V6a2 2 0 0 0-2-2H3Z"/><path d="m19 8.839-7.77 3.885a2.75 2.75 0 0 1-2.46 0L1 8.839V14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.839Z"/></svg>
-          </button>
-          <button class="card-icon-btn card-corner-btn card-done-btn" data-id="{{ n.id }}" data-source="{{ n.source if 'source' in n else 'gmail' }}" title="Mark as read" style="{{ 'display:none' if n.read else '' }}">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clip-rule="evenodd"/></svg>
-          </button>
+          <div class="card-actions">
+          {% if _status == 'inbox' %}
+            <button class="card-icon-btn card-corner-btn card-consume-btn" data-id="{{ n.id }}" title="Consumed">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clip-rule="evenodd"/></svg>
+            </button>
+            <button class="card-icon-btn card-corner-btn card-skip-btn" data-id="{{ n.id }}" title="Skip">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z"/></svg>
+            </button>
+          {% elif _status == 'consumed' %}
+            <button class="card-icon-btn card-corner-btn card-skip-btn" data-id="{{ n.id }}" title="Mark as skipped">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z"/></svg>
+            </button>
+            <button class="card-icon-btn card-corner-btn card-restore-btn" data-id="{{ n.id }}" title="Restore to inbox">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path d="M3 4a2 2 0 0 0-2 2v1.161l8.441 4.221a1.25 1.25 0 0 0 1.118 0L19 7.162V6a2 2 0 0 0-2-2H3Z"/><path d="m19 8.839-7.77 3.885a2.75 2.75 0 0 1-2.46 0L1 8.839V14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.839Z"/></svg>
+            </button>
+            <button class="card-icon-btn card-corner-btn card-delete-btn" data-id="{{ n.id }}" title="Delete permanently">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 0 0 6 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 1 0 .23 1.482l.149-.022.841 10.518A2.75 2.75 0 0 0 7.596 19h4.807a2.75 2.75 0 0 0 2.742-2.53l.841-10.52.149.023a.75.75 0 0 0 .23-1.482A41.03 41.03 0 0 0 14 4.193V3.75A2.75 2.75 0 0 0 11.25 1h-2.5ZM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4ZM8.58 7.72a.75.75 0 0 0-1.5.06l.3 7.5a.75.75 0 1 0 1.5-.06l-.3-7.5Zm4.34.06a.75.75 0 1 0-1.5-.06l-.3 7.5a.75.75 0 1 0 1.5.06l.3-7.5Z" clip-rule="evenodd"/></svg>
+            </button>
+          {% elif _status == 'skipped' %}
+            <button class="card-icon-btn card-corner-btn card-consume-btn" data-id="{{ n.id }}" title="Mark as consumed">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clip-rule="evenodd"/></svg>
+            </button>
+            <button class="card-icon-btn card-corner-btn card-restore-btn" data-id="{{ n.id }}" title="Restore to inbox">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path d="M3 4a2 2 0 0 0-2 2v1.161l8.441 4.221a1.25 1.25 0 0 0 1.118 0L19 7.162V6a2 2 0 0 0-2-2H3Z"/><path d="m19 8.839-7.77 3.885a2.75 2.75 0 0 1-2.46 0L1 8.839V14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.839Z"/></svg>
+            </button>
+            <button class="card-icon-btn card-corner-btn card-delete-btn" data-id="{{ n.id }}" title="Delete permanently">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 0 0 6 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 1 0 .23 1.482l.149-.022.841 10.518A2.75 2.75 0 0 0 7.596 19h4.807a2.75 2.75 0 0 0 2.742-2.53l.841-10.52.149.023a.75.75 0 0 0 .23-1.482A41.03 41.03 0 0 0 14 4.193V3.75A2.75 2.75 0 0 0 11.25 1h-2.5ZM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4ZM8.58 7.72a.75.75 0 0 0-1.5.06l.3 7.5a.75.75 0 1 0 1.5-.06l-.3-7.5Zm4.34.06a.75.75 0 1 0-1.5-.06l-.3 7.5a.75.75 0 1 0 1.5.06l.3-7.5Z" clip-rule="evenodd"/></svg>
+            </button>
+          {% endif %}
+          </div>
         </div>
       </li>
       {% endfor %}
@@ -201,11 +241,11 @@
         length: document.querySelector('.length-btn.active')?.dataset.length || '',
         source: document.querySelector('.source-btn.active')?.dataset.source || '',
         lean: document.querySelector('.lean-btn.active')?.dataset.lean || '',
-        showRead: showingRead,
+        view: currentView,
       }));
     }
 
-    let showingRead = false;
+    let currentView = 'inbox';
 
     function lengthBucket(mins) {
       const m = Number(mins) || 0;
@@ -227,12 +267,12 @@
       const activeSource = document.querySelector('.source-btn.active')?.dataset.source || '';
       const activeLean = document.querySelector('.lean-btn.active')?.dataset.lean || '';
       document.querySelectorAll('.item').forEach(item => {
-        const isRead = item.dataset.read === 'true';
+        const itemStatus = item.dataset.status || 'inbox';
         const senderMatch = !activeSender || item.dataset.sender === activeSender;
         const lengthMatch = !activeLength || lengthBucket(item.dataset.mins) === activeLength;
         const sourceMatch = !activeSource || item.dataset.source === activeSource;
         const leanMatch = !activeLean || leanBucket(item.dataset.lean) === activeLean;
-        item.style.display = (isRead === showingRead && senderMatch && lengthMatch && sourceMatch && leanMatch) ? '' : 'none';
+        item.style.display = (itemStatus === currentView && senderMatch && lengthMatch && sourceMatch && leanMatch) ? '' : 'none';
       });
       updateSubtitle();
       updateFilterCounts();
@@ -253,8 +293,7 @@
         const length = btn.dataset.length;
         if (!length) return;
         const count = allItems.filter(item => {
-          const isRead = item.dataset.read === 'true';
-          if (isRead !== showingRead) return false;
+          if ((item.dataset.status || 'inbox') !== currentView) return false;
           if (activeSender && item.dataset.sender !== activeSender) return false;
           if (activeSource && item.dataset.source !== activeSource) return false;
           return lengthBucket(item.dataset.mins) === length;
@@ -272,8 +311,7 @@
       document.querySelectorAll('.filter-btn[data-sender]').forEach(btn => {
         const sender = btn.dataset.sender;
         const matchingItems = allItems.filter(item => {
-          const isRead = item.dataset.read === 'true';
-          if (isRead !== showingRead) return false;
+          if ((item.dataset.status || 'inbox') !== currentView) return false;
           if (sender && item.dataset.sender !== sender) return false;
           if (activeLength && lengthBucket(item.dataset.mins) !== activeLength) return false;
           if (activeSource && item.dataset.source !== activeSource) return false;
@@ -318,8 +356,7 @@
         const source = btn.dataset.source;
         if (!source) return; // skip "All sources"
         const count = allItems.filter(item => {
-          const isRead = item.dataset.read === 'true';
-          if (isRead !== showingRead) return false;
+          if ((item.dataset.status || 'inbox') !== currentView) return false;
           if (activeSender && item.dataset.sender !== activeSender) return false;
           if (activeLength && lengthBucket(item.dataset.mins) !== activeLength) return false;
           if (source && item.dataset.source !== source) return false;
@@ -334,8 +371,7 @@
         const lean = btn.dataset.lean;
         if (!lean) return; // skip "All views"
         const count = allItems.filter(item => {
-          const isRead = item.dataset.read === 'true';
-          if (isRead !== showingRead) return false;
+          if ((item.dataset.status || 'inbox') !== currentView) return false;
           if (activeSender && item.dataset.sender !== activeSender) return false;
           if (activeLength && lengthBucket(item.dataset.mins) !== activeLength) return false;
           if (activeSource && item.dataset.source !== activeSource) return false;
@@ -357,23 +393,21 @@
       const count = visibleItems.length;
       const totalMins = visibleItems.reduce((s, el) => s + (Number(el.dataset.mins) || 0), 0);
       const sub = document.getElementById('subtitle');
-      if (showingRead) {
-        sub.innerHTML = `${count} read · ${fmtTime(totalMins)}`;
-      } else {
-        sub.innerHTML = `${count} items · ${fmtTime(totalMins)}`;
-      }
+      const label = currentView === 'inbox' ? 'items' : currentView;
+      sub.innerHTML = `${count} ${label} · ${fmtTime(totalMins)}`;
     }
 
-    function toggleView() {
-      showingRead = !showingRead;
-      const btn = document.getElementById('view-toggle-btn');
-      btn.textContent = showingRead ? 'Back to inbox' : 'Go to archive';
+    function setView(view) {
+      currentView = view;
+      document.getElementById('view-select').value = view;
       applyView();
       saveState();
     }
 
-    function doneUrl(id) { return `/entry/${id}/done`; }
-    function unreadUrl(id) { return `/entry/${id}/unread`; }
+    function consumeUrl(id) { return `/entry/${id}/consume`; }
+    function skipUrl(id) { return `/entry/${id}/skip`; }
+    function restoreUrl(id) { return `/entry/${id}/restore`; }
+    function deleteUrl(id) { return `/entry/${id}/delete`; }
 
     function setLoading(btn, on) {
       btn.classList.toggle('is-loading', on);
@@ -386,39 +420,50 @@
       setTimeout(() => btn.classList.remove('is-error'), 1800);
     }
 
-    document.querySelectorAll('.card-done-btn').forEach(btn => {
+    async function postAction(url, btn) {
+      setLoading(btn, true);
+      let resp;
+      try { resp = await fetch(url, { method: 'POST' }); }
+      catch { flashError(btn); return false; }
+      if (!resp.ok) { flashError(btn); return false; }
+      setLoading(btn, false);
+      return true;
+    }
+
+    document.querySelectorAll('.card-consume-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
-        const source = btn.dataset.source || 'gmail';
-        setLoading(btn, true);
-        let resp;
-        try { resp = await fetch(doneUrl(id), { method: 'POST' }); }
-        catch { flashError(btn); return; }
-        if (!resp.ok) { flashError(btn); return; }
-        setLoading(btn, false);
-        const item = btn.closest('.item');
-        item.dataset.read = 'true';
-        btn.style.display = 'none';
-        item.querySelector('.card-unread-btn').style.display = '';
+        if (!await postAction(consumeUrl(id), btn)) return;
+        btn.closest('.item').dataset.status = 'consumed';
         applyView();
       });
     });
 
-    document.querySelectorAll('.card-unread-btn').forEach(btn => {
+    document.querySelectorAll('.card-skip-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
-        const source = btn.dataset.source || 'gmail';
-        setLoading(btn, true);
-        let resp;
-        try { resp = await fetch(unreadUrl(id), { method: 'POST' }); }
-        catch { flashError(btn); return; }
-        if (!resp.ok) { flashError(btn); return; }
-        setLoading(btn, false);
-        const item = btn.closest('.item');
-        item.dataset.read = 'false';
-        btn.style.display = 'none';
-        item.querySelector('.card-done-btn').style.display = '';
+        if (!await postAction(skipUrl(id), btn)) return;
+        btn.closest('.item').dataset.status = 'skipped';
         applyView();
+      });
+    });
+
+    document.querySelectorAll('.card-restore-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.id;
+        if (!await postAction(restoreUrl(id), btn)) return;
+        btn.closest('.item').dataset.status = 'inbox';
+        applyView();
+      });
+    });
+
+    document.querySelectorAll('.card-delete-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.id;
+        if (!await postAction(deleteUrl(id), btn)) return;
+        btn.closest('.item').remove();
+        updateSubtitle();
+        updateFilterCounts();
       });
     });
 
@@ -426,9 +471,9 @@
     (function restoreState() {
       try {
         const s = JSON.parse(localStorage.getItem(LS) || '{}');
-        if (s.showRead) {
-          showingRead = true;
-          document.getElementById('view-toggle-btn').textContent = 'Back to inbox';
+        if (s.view && ['inbox', 'consumed', 'skipped'].includes(s.view)) {
+          currentView = s.view;
+          document.getElementById('view-select').value = s.view;
         }
         if (s.sender !== undefined) {
           const match = document.querySelector(`.filter-btn[data-sender="${CSS.escape(s.sender)}"]`);

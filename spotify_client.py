@@ -149,6 +149,7 @@ def sync_articles(_service=None) -> list[dict]:
                 "from": show_name,
                 "date": date_rfc,
                 "snippet": description[:200] if description else "",
+                "description": description,
                 "url": url,
                 "thumbnail": thumbnail,
                 "duration": f"{duration_min}:{duration_s % 60:02d}" if duration_min else "",
@@ -176,12 +177,11 @@ def list_articles_cached() -> list[dict]:
             entry = json.loads(f.read_text())
         except Exception:
             continue
-        if entry.get("read"):
-            continue
         if "subject" in entry:
             entries.append({k: entry[k] for k in (
                 "id", "subject", "from", "date", "snippet", "summary",
-                "url", "thumbnail", "duration", "minutes", "source",
+                "status", "url", "thumbnail", "duration", "minutes", "source",
+                "transcription_status", "transcription_deferred_until", "transcription_error",
                 "relevance_score", "relevance_note",
                 "challenge_score", "challenge_note",
                 "lean", "lean_note",
@@ -270,7 +270,8 @@ def remove_from_saved(entry_id: str) -> bool:
         sp.current_user_saved_episodes_delete([episode_id])
     except Exception as e:
         print(f"[spotify] remove saved episode failed for {episode_id}: {e}")
-    cached["read"] = True
+    cached.pop("read", None)
+    cached["status"] = "consumed"
     _save_entry(entry_id, cached)
     return True
 
@@ -286,6 +287,7 @@ def mark_unread(entry_id: str) -> bool:
     except Exception as e:
         print(f"[spotify] re-save episode failed for {episode_id}: {e}")
     cached.pop("read", None)
+    cached.pop("status", None)
     _save_entry(entry_id, cached)
     return True
 
@@ -328,10 +330,13 @@ class SpotifySource(Source):
             self.clear_error()
         return body
 
-    def mark_done(self, entry_id: str) -> bool:
+    def mark_consumed(self, entry_id: str) -> bool:
         return remove_from_saved(entry_id)
 
-    def mark_unread_entry(self, entry_id: str) -> bool:
+    def _external_consume(self, entry_id: str) -> None:
+        remove_from_saved(entry_id)
+
+    def mark_restored(self, entry_id: str) -> bool:
         return mark_unread(entry_id)
 
     def list_cached(self) -> list[dict]:

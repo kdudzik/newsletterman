@@ -13,7 +13,7 @@ import browser_cookie3
 from source_base import (
     Source,
     _CACHE_DIR, _load_entry, _save_entry,
-    _parse_ts, _iso_to_rfc2822, _sync_read_flags,
+    _parse_ts, _iso_to_rfc2822, _sync_status_flags,
 )
 
 _INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
@@ -216,7 +216,7 @@ def list_articles_cached() -> list[dict]:
             if "subject" in entry:
                 articles.append({k: entry[k] for k in (
                     "id", "subject", "from", "date", "snippet", "summary",
-                    "read", "word_count", "minutes", "relevance_score", "relevance_note",
+                    "status", "word_count", "minutes", "relevance_score", "relevance_note",
                     "challenge_score", "challenge_note", "lean", "lean_note",
                     "trust_score", "trust_note",
                     "url", "thumbnail", "duration", "source",
@@ -255,7 +255,7 @@ def sync_articles(_service=None) -> list[dict]:
     print(f"[youtube] sync: {len(unique)} unique videos after dedup")
     current_ids = {f"youtube-{v['videoId']}" for v in unique}
 
-    _sync_read_flags("youtube", current_ids)
+    _sync_status_flags("youtube", current_ids)
 
     articles = []
     for position, raw in enumerate(unique):
@@ -415,7 +415,8 @@ def remove_from_watch_later(article_id: str, _cookie_file: str = "") -> bool:
     except Exception as e:
         print(f"[youtube] WL removal failed for {video_id}: {type(e).__name__}: {e}")
 
-    cached["read"] = True
+    cached.pop("read", None)
+    cached["status"] = "consumed"
     _save_entry(article_id, cached)
     return True
 
@@ -449,6 +450,7 @@ def mark_unread(article_id: str) -> bool:
         print(f"[youtube] WL re-add failed for {video_id}: {type(e).__name__}: {e}")
 
     cached.pop("read", None)
+    cached.pop("status", None)
     _save_entry(article_id, cached)
     return True
 
@@ -467,10 +469,13 @@ class YouTubeSource(Source):
     def get_body(self, entry_id: str) -> str:
         return get_article_body(entry_id)
 
-    def mark_done(self, entry_id: str) -> bool:
+    def mark_consumed(self, entry_id: str) -> bool:
         return remove_from_watch_later(entry_id)
 
-    def mark_unread_entry(self, entry_id: str) -> bool:
+    def _external_consume(self, entry_id: str) -> None:
+        remove_from_watch_later(entry_id)
+
+    def mark_restored(self, entry_id: str) -> bool:
         return mark_unread(entry_id)
 
     def list_cached(self) -> list[dict]:

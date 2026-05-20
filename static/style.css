@@ -198,14 +198,20 @@ h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
 .card-icon-btn:hover { background: var(--bg); color: var(--text); }
 .card-done-btn:hover { color: var(--done); }
 
-.card-corner-btn {
+.card-actions {
   position: absolute;
   top: .4rem;
   right: .4rem;
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
   opacity: 0;
-  transition: opacity .15s, color .15s, background .15s;
+  transition: opacity .15s;
 }
-.card:hover .card-corner-btn { opacity: 1; }
+.card:hover .card-actions { opacity: 1; }
+.card-corner-btn {
+  position: static;
+}
 
 @keyframes spin { to { transform: rotate(360deg); } }
 

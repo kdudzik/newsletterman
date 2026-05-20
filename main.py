@@ -535,11 +535,44 @@ def _append_queue_event(event: str, entry_id: str, entry: dict) -> None:
         if minutes == 0:
             return  # defer until minutes is known
         _add_events_logged.add(entry_id)
-    record = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-              "event": event, "id": entry_id, "source": source, "minutes": minutes}
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "event": event, "id": entry_id, "source": source, "minutes": minutes,
+        "subject": entry.get("subject", ""),
+        "author": _sender_name(entry.get("from", "")) if entry.get("from") else "",
+        "url": entry.get("url", entry.get("gmail_url", "")),
+    }
     path = Path(__file__).parent / ".cache" / "queue_events.jsonl"
     with open(path, "a") as f:
         f.write(_json.dumps(record) + "\n")
+
+
+def _rewrite_or_append_queue_event(event: str, entry_id: str, entry: dict) -> None:
+    """For consumed↔skipped switches: rewrite the last event for this entry in-place.
+
+    This corrects the historical record rather than appending a new event, since
+    the user is fixing their classification, not performing a new action.
+    Falls back to appending if no prior event is found.
+    """
+    import json as _json
+    path = Path(__file__).parent / ".cache" / "queue_events.jsonl"
+    if path.exists():
+        lines = path.read_text().splitlines()
+        # Find last line for this entry_id
+        for i in range(len(lines) - 1, -1, -1):
+            line = lines[i].strip()
+            if not line:
+                continue
+            try:
+                rec = _json.loads(line)
+                if rec.get("id") == entry_id and rec.get("event") in ("consumed", "skipped"):
+                    rec["event"] = event
+                    lines[i] = _json.dumps(rec)
+                    path.write_text("\n".join(lines) + "\n")
+                    return
+            except Exception:
+                pass
+    _append_queue_event(event, entry_id, entry)
 
 
 def _log_new_entries(items: list[dict], before: set[str]) -> None:
@@ -630,7 +663,7 @@ def _run_pipeline_pass(label: str = "") -> None:
 
 
 def _entry_stage(entry_id: str, entry: dict) -> str:
-    if entry.get("read"):
+    if entry.get("status") in ("consumed", "skipped"):
         return "done"
     if entry.get("summary") and not _is_title_only_summary(entry) and not _is_incomplete_multitopic_summary(entry):
         if (
@@ -858,33 +891,66 @@ async def entry_summarize(entry_id: str):
     return {"summary": summary, "summary_html": str(_markdown_summary(summary))}
 
 
-@app.post("/entry/{entry_id}/done")
-async def entry_done(entry_id: str):
+@app.post("/entry/{entry_id}/consume")
+async def entry_consume(entry_id: str):
     source = registry.for_entry(entry_id)
     loop = asyncio.get_event_loop()
     try:
-        ok = await loop.run_in_executor(None, source.mark_done, entry_id)
+        ok = await loop.run_in_executor(None, source.mark_consumed, entry_id)
     except Exception as e:
         source.set_error(str(e))
         raise HTTPException(status_code=502, detail=str(e))
     if not ok:
         raise HTTPException(status_code=404, detail="Not found or failed")
-    _append_queue_event("read", entry_id, source.load_entry(entry_id))
+    entry = source.load_entry(entry_id)
+    _rewrite_or_append_queue_event("consumed", entry_id, entry)
     return {"ok": True}
 
 
-@app.post("/entry/{entry_id}/unread")
-async def entry_unread(entry_id: str):
+@app.post("/entry/{entry_id}/skip")
+async def entry_skip(entry_id: str):
     source = registry.for_entry(entry_id)
     loop = asyncio.get_event_loop()
     try:
-        ok = await loop.run_in_executor(None, source.mark_unread_entry, entry_id)
+        ok = await loop.run_in_executor(None, source.mark_skipped, entry_id)
+    except Exception as e:
+        source.set_error(str(e))
+        raise HTTPException(status_code=502, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Not found or failed")
+    entry = source.load_entry(entry_id)
+    _rewrite_or_append_queue_event("skipped", entry_id, entry)
+    return {"ok": True}
+
+
+@app.post("/entry/{entry_id}/restore")
+async def entry_restore(entry_id: str):
+    source = registry.for_entry(entry_id)
+    loop = asyncio.get_event_loop()
+    try:
+        ok = await loop.run_in_executor(None, source.mark_restored, entry_id)
     except Exception as e:
         source.set_error(str(e))
         raise HTTPException(status_code=502, detail=str(e))
     if not ok:
         raise HTTPException(status_code=404, detail="Not found")
-    _append_queue_event("unread", entry_id, source.load_entry(entry_id))
+    _append_queue_event("restored", entry_id, source.load_entry(entry_id))
+    return {"ok": True}
+
+
+@app.post("/entry/{entry_id}/delete")
+async def entry_delete(entry_id: str):
+    source = registry.for_entry(entry_id)
+    loop = asyncio.get_event_loop()
+    entry = source.load_entry(entry_id)
+    try:
+        await loop.run_in_executor(None, source.mark_consumed, entry_id)
+    except Exception:
+        pass  # best effort — still delete locally
+    _append_queue_event("delete", entry_id, entry)
+    # Remove cache file
+    cache_file = Path(__file__).parent / ".cache" / f"{entry_id}.json"
+    cache_file.unlink(missing_ok=True)
     return {"ok": True}
 
 
@@ -962,9 +1028,9 @@ async def api_queue_history():
             snapshots.append((cur_day, dict(queue)))
             cur_day = day
         eid = ev["id"]
-        if ev["event"] in ("add", "unread"):
+        if ev["event"] in ("add", "restored", "unread"):
             queue[eid] = {"source": ev["source"], "minutes": ev["minutes"]}
-        elif ev["event"] in ("read", "delete"):
+        elif ev["event"] in ("consumed", "skipped", "delete", "read"):
             queue.pop(eid, None)
     snapshots.append((cur_day, dict(queue)))
 
@@ -1023,15 +1089,19 @@ async def api_queue_events(date: str):
                 continue
             if ev.get("ts", "")[:10] != date:
                 continue
-            entry = registry.for_entry(ev["id"]).load_entry(ev["id"])
+            entry = registry.for_entry(ev["id"]).load_entry(ev["id"]) if ev.get("id") else {}
+            subject = ev.get("subject") or entry.get("subject") or ev["id"]
+            author = ev.get("author") or (_sender_name(entry.get("from", "")) if entry.get("from") else "")
+            url = ev.get("url") or entry.get("url") or entry.get("gmail_url", "")
+            minutes = ev.get("minutes") or entry.get("minutes", 0)
             results.append({
                 "event": ev["event"],
                 "id": ev["id"],
                 "source": ev["source"],
-                "minutes": ev["minutes"],
-                "subject": entry.get("subject", ev["id"]),
-                "author": _sender_name(entry.get("from", "")) if entry.get("from") else "",
-                "url": entry.get("url", entry.get("gmail_url", "")),
+                "minutes": minutes,
+                "subject": subject,
+                "author": author,
+                "url": url,
                 "ts": ev["ts"],
             })
     results.sort(key=lambda e: e["ts"])

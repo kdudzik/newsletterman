@@ -13,7 +13,7 @@ import requests
 from source_base import (
     Source,
     _CACHE_DIR, _load_entry, _save_entry, _wpm_minutes,
-    _parse_ts, _iso_to_rfc2822, _extract_text, _sync_read_flags,
+    _parse_ts, _iso_to_rfc2822, _extract_text, _sync_status_flags,
 )
 
 _API_BASE = "https://api.raindrop.io/rest/v1"
@@ -138,7 +138,7 @@ def list_articles_cached() -> list[dict]:
             if "subject" in entry:
                 articles.append({k: entry[k] for k in (
                     "id", "subject", "from", "date", "snippet", "summary",
-                    "read", "word_count", "minutes", "relevance_score", "relevance_note",
+                    "status", "word_count", "minutes", "relevance_score", "relevance_note",
                     "challenge_score", "challenge_note", "lean", "lean_note",
                     "trust_score", "trust_note",
                     "url", "source",
@@ -161,7 +161,7 @@ def sync_articles(token: str) -> list[dict]:
     items = resp.json().get("items", [])
     current_ids = {f"raindrop-{item['_id']}" for item in items}
 
-    _sync_read_flags("raindrop", current_ids)
+    _sync_status_flags("raindrop", current_ids)
 
     articles = []
     for item in items:
@@ -282,7 +282,8 @@ def move_to_archive(article_id: str, token: str) -> bool:
     except Exception as e:
         print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [raindrop] move_to_archive error: {e}")
         return False
-    cached["read"] = True
+    cached.pop("read", None)
+    cached["status"] = "consumed"
     _save_entry(article_id, cached)
     return True
 
@@ -303,6 +304,7 @@ def mark_unread(article_id: str, token: str) -> bool:
     except Exception as e:
         print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [raindrop] mark_unread error: {e}")
     cached.pop("read", None)
+    cached.pop("status", None)
     _save_entry(article_id, cached)
     return True
 
@@ -323,10 +325,13 @@ class RaindropSource(Source):
     def get_body(self, entry_id: str) -> str:
         return get_article_body(entry_id)
 
-    def mark_done(self, entry_id: str) -> bool:
+    def mark_consumed(self, entry_id: str) -> bool:
         return move_to_archive(entry_id, self._token)
 
-    def mark_unread_entry(self, entry_id: str) -> bool:
+    def _external_consume(self, entry_id: str) -> None:
+        move_to_archive(entry_id, self._token)
+
+    def mark_restored(self, entry_id: str) -> bool:
         return mark_unread(entry_id, self._token)
 
     def list_cached(self) -> list[dict]:
