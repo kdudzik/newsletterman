@@ -184,6 +184,8 @@ def _summarize_entry(entry_id: str) -> None:
                 _score_entry(entry_id)
             return
         cached = source.load_entry(entry_id)
+        if entry_id not in _add_events_logged:
+            _append_queue_event("add", entry_id, cached)
         subject = cached.get("subject", "")
         if source.is_podcast and len(body) < 400:
             summary = body
@@ -194,8 +196,6 @@ def _summarize_entry(entry_id: str) -> None:
         cached["summary_version"] = _SUMMARY_VERSION
         source.save_entry(entry_id, cached)
         _log(f"[summarize] done: {entry_id}")
-        if entry_id not in _add_events_logged:
-            _append_queue_event("add", entry_id, cached)
         _score_entry(entry_id)
     except Exception as e:
         if is_rate_limit_error(str(e)):
@@ -524,19 +524,12 @@ def _cached_ids() -> set[str]:
     cache_dir = Path(__file__).parent / ".cache"
     if not cache_dir.exists():
         return set()
-    ids: set[str] = set()
-    for f in cache_dir.glob("*.json"):
-        stem = f.stem
-        ids.add(stem)
-        # gmail files are stored as gmail-{bare_id} but events use bare ids
-        if stem.startswith("gmail-"):
-            ids.add(stem[len("gmail-"):])
-    return ids
+    return {f.stem for f in cache_dir.glob("*.json")}
 
 
 def _append_queue_event(event: str, entry_id: str, entry: dict) -> None:
     import json as _json
-    source = entry.get("source") or "gmail"
+    source = entry.get("source", "gmail")
     minutes = entry.get("minutes", 0)
     if event == "add":
         if minutes == 0:
@@ -685,7 +678,7 @@ def _monitor_rows(limit_per_stage: int = 25) -> dict[str, list[dict]]:
         row = {
             "id": entry_id,
             "subject": entry.get("subject", entry_id),
-            "source": entry.get("source", "gmail"),
+            "source": entry.get("source", ""),
             "author": _sender_name(entry.get("from", "")),
             "date": entry.get("date", ""),
             "minutes": entry.get("minutes", 0),
@@ -850,6 +843,8 @@ async def entry_summarize(entry_id: str):
             )
         raise HTTPException(status_code=422, detail="No body content found")
     cached = source.load_entry(entry_id)
+    if entry_id not in _add_events_logged:
+        _append_queue_event("add", entry_id, cached)
     subject = cached.get("subject", "")
     if source.is_podcast and len(body) < 400:
         summary = body

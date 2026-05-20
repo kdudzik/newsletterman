@@ -13,8 +13,7 @@ _EXCLUDE_SUBJECT = os.getenv("NEWSLETTER_EXCLUDE_SUBJECT", "")
 
 
 def _cache_file(message_id: str) -> Path:
-    stem = message_id if message_id.startswith("gmail-") else f"gmail-{message_id}"
-    return _CACHE_DIR / f"{stem}.json"
+    return _CACHE_DIR / f"{message_id}.json"
 
 
 def _load_entry(message_id: str) -> dict:
@@ -111,14 +110,14 @@ def sync_newsletters(service) -> list[dict]:
         maxResults=100,
     ).execute()
 
-    current_ids = {msg["id"] for msg in result.get("messages", [])}
+    current_bare_ids = {msg["id"] for msg in result.get("messages", [])}
 
     if _CACHE_DIR.exists():
         for f in _CACHE_DIR.glob("gmail-*.json"):
             bare_id = f.stem[len("gmail-"):]
             try:
                 entry = json.loads(f.read_text())
-                if bare_id in current_ids:
+                if bare_id in current_bare_ids:
                     if entry.get("read"):
                         entry["read"] = False
                         f.write_text(json.dumps(entry, indent=2))
@@ -132,7 +131,8 @@ def sync_newsletters(service) -> list[dict]:
     newsletters = []
     for msg in result.get("messages", []):
         mid = msg["id"]
-        cached = _load_entry(mid)
+        eid = f"gmail-{mid}"
+        cached = _load_entry(eid)
         if "subject" in cached:
             newsletters.append({k: cached[k] for k in ("id", "subject", "from", "date", "snippet", "summary") if k in cached})
             continue
@@ -147,7 +147,8 @@ def sync_newsletters(service) -> list[dict]:
         if _EXCLUDE_SUBJECT and _EXCLUDE_SUBJECT in subject:
             continue
         entry = {
-            "id": mid,
+            "id": eid,
+            "source": "gmail",
             "subject": subject,
             "from": headers.get("From", ""),
             "date": headers.get("Date", ""),
@@ -155,12 +156,12 @@ def sync_newsletters(service) -> list[dict]:
         }
         newsletters.append(entry)
         cached.update(entry)
-        _save_entry(mid, cached)
+        _save_entry(eid, cached)
     return newsletters
 
 
 def get_newsletter_body(message_id: str, service) -> dict:
-    bare_id = message_id[len("gmail-"):] if message_id.startswith("gmail-") else message_id
+    bare_id = message_id[len("gmail-"):]
     cached = _load_entry(message_id)
     if "body" in cached:
         return {k: cached[k] for k in ("id", "subject", "from", "date", "body", "gmail_url", "word_count", "minutes") if k in cached}
@@ -172,7 +173,8 @@ def get_newsletter_body(message_id: str, service) -> dict:
     ).execute()
     headers = {h["name"]: h["value"] for h in msg["payload"]["headers"]}
     data = {
-        "id": bare_id,
+        "id": message_id,
+        "source": "gmail",
         "subject": headers.get("Subject", "(no subject)"),
         "from": headers.get("From", ""),
         "date": headers.get("Date", ""),
@@ -208,7 +210,7 @@ def restore_read_later_label(message_id: str, service) -> bool:
         return False
     service.users().messages().modify(
         userId="me",
-        id=message_id,
+        id=message_id[len("gmail-"):],
         body={"addLabelIds": [label_id, "UNREAD"]},
     ).execute()
     cached = _load_entry(message_id)
@@ -223,7 +225,7 @@ def remove_read_later_label(message_id: str, service) -> bool:
         return False
     service.users().messages().modify(
         userId="me",
-        id=message_id,
+        id=message_id[len("gmail-"):],
         body={"removeLabelIds": [label_id, "UNREAD"]},
     ).execute()
     cached = _load_entry(message_id)
