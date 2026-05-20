@@ -210,7 +210,7 @@ def get_article_body(entry_id: str, drive_service=None) -> str:
             _save_entry(entry_id, cached)
             _set_active_transcription(entry_id)
             try:
-                transcript = transcribe_episode(drive_service, file_id)
+                transcript = transcribe_episode(drive_service, file_id, subject=cached.get("subject", ""))
             except TranscriptDeferredError as e:
                 cached["transcription_status"] = "deferred"
                 cached["transcription_deferred_until"] = e.retry_at

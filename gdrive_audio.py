@@ -86,7 +86,7 @@ def find_episode_file(drive_service, subject: str) -> str | None:
     return None
 
 
-def transcribe_episode(drive_service, file_id: str) -> str:
+def transcribe_episode(drive_service, file_id: str, subject: str = "") -> str:
     """Download mp3 from Drive, split into chunks, transcribe via Groq (fallback: OpenAI)."""
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
         tmp_path = tmp.name
@@ -97,17 +97,22 @@ def transcribe_episode(drive_service, file_id: str) -> str:
             _, done = downloader.next_chunk()
     print(f"[gdrive] downloaded {os.path.getsize(tmp_path) // (1024*1024)} MB")
     try:
-        return _transcribe_chunked(tmp_path)
+        return _transcribe_chunked(tmp_path, subject=subject)
     finally:
         os.unlink(tmp_path)
 
 
-def _transcribe_chunked(mp3_path: str) -> str:
+def _build_whisper_prompt(subject: str) -> str:
+    return f"Podcast o polityce zagranicznej. Odcinek: {subject}" if subject else "Podcast o polityce zagranicznej."
+
+
+def _transcribe_chunked(mp3_path: str, subject: str = "") -> str:
     _configure_audio_tools()
     audio = AudioSegment.from_mp3(mp3_path)
     duration_min = len(audio) // 60000
     chunks = [audio[i:i + CHUNK_MS] for i in range(0, len(audio), CHUNK_MS)]
     print(f"[gdrive] transcribing {duration_min}min audio in {len(chunks)} chunk(s)")
+    prompt = _build_whisper_prompt(subject)
     parts = []
     for i, chunk in enumerate(chunks):
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tf:
@@ -115,7 +120,7 @@ def _transcribe_chunked(mp3_path: str) -> str:
         try:
             chunk.export(chunk_path, format="mp3")
             with open(chunk_path, "rb") as fp:
-                parts.append(_transcribe_file(fp))
+                parts.append(_transcribe_file(fp, prompt=prompt))
             print(f"[gdrive] chunk {i+1}/{len(chunks)} done")
         finally:
             os.unlink(chunk_path)
@@ -124,7 +129,7 @@ def _transcribe_chunked(mp3_path: str) -> str:
     return transcript
 
 
-def _transcribe_file(fp) -> str:
+def _transcribe_file(fp, prompt: str = "") -> str:
     groq_key = os.getenv("GROQ_API_KEY")
     if groq_key:
         from groq import Groq
@@ -133,6 +138,7 @@ def _transcribe_file(fp) -> str:
                 model="whisper-large-v3-turbo",
                 file=fp,
                 response_format="text",
+                prompt=prompt or None,
             )
         except Exception as e:
             if _is_quota_error(e):
@@ -156,6 +162,7 @@ def _transcribe_file(fp) -> str:
                 model="whisper-1",
                 file=fp,
                 response_format="text",
+                prompt=prompt or None,
             )
         except Exception as e:
             if is_rate_limit_error(str(e)):
