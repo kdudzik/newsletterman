@@ -15,6 +15,16 @@ from source_base import (
 )
 
 
+def _is_transcribable_show(show_name: str) -> bool:
+    """Return True for shows whose audio is fetched from Drive rather than Spotify description."""
+    try:
+        from config import SPOTIFY_DRIVE_TRANSCRIBE_SHOWS
+    except ImportError:
+        SPOTIFY_DRIVE_TRANSCRIBE_SHOWS = ["podsumowanie"]
+    name = (show_name or "").lower()
+    return any(keyword in name for keyword in SPOTIFY_DRIVE_TRANSCRIBE_SHOWS)
+
+
 def _clean_description(text: str) -> str:
     text = text.replace("\xa0", " ")
     text = re.sub(r"([.!?])([A-ZĄĆĘŁŃÓŚŹŻ])", r"\1 \2", text)
@@ -196,7 +206,7 @@ def get_article_body(entry_id: str, drive_service=None) -> str:
         _save_entry(entry_id, cached)
 
     # Podsumowanie: try Drive transcription (file may not exist yet — don't cache failure)
-    if "podsumowanie" in (cached.get("from") or "").lower() and drive_service:
+    if _is_transcribable_show(cached.get("from")) and drive_service:
         active_entry = _active_transcription_entry()
         if active_entry and active_entry != entry_id:
             cached["transcription_status"] = "queued"
@@ -308,7 +318,7 @@ class SpotifySource(Source):
         return sync_articles()
 
     def get_body(self, entry_id: str) -> str:
-        drive_service = self._ensure_drive_service() if "podsumowanie" in (_load_entry(entry_id).get("from") or "").lower() else self._drive_service
+        drive_service = self._ensure_drive_service() if _is_transcribable_show(_load_entry(entry_id).get("from")) else self._drive_service
         body = get_article_body(entry_id, drive_service=drive_service)
         cached = _load_entry(entry_id)
         deferred_until = _deferred_until(cached)

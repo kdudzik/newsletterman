@@ -23,7 +23,7 @@ from google_auth import build_google_service
 from raindrop_client import RaindropSource
 from wyborcza_client import WyborczaSource
 from youtube_client import YouTubeSource, build_service as _yt_build_service
-from spotify_client import SpotifySource
+from spotify_client import SpotifySource, _is_transcribable_show
 from summarizer import summarize
 import scorer as _scorer
 from provider_state import (
@@ -652,7 +652,7 @@ def _entry_stage(entry_id: str, entry: dict) -> str:
     retry_at = _deferred_retry_at(entry)
     if (
         entry.get("source") == "spotify"
-        and "podsumowanie" in (entry.get("from") or "").lower()
+        and _is_transcribable_show(entry.get("from"))
         and not entry.get("body")
     ):
         return "awaiting_transcript"
