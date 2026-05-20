@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Monitor · Newsletterman</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📬</text></svg>">
+  <link rel="stylesheet" href="/static/style.css?v={{ css_version() }}">
+</head>
+<body>
+  <header>
+    <div class="header-top">
+      <div>
+        <h1>📬 Newsletterman <span class="subtitle">Pipeline monitor</span></h1>
+      </div>
+      <div class="header-actions">
+        <div class="monitor-live" id="monitor-live">
+          <span class="monitor-live-dot"></span>
+          <span id="monitor-live-text">Auto-refresh on</span>
+        </div>
+        <a href="/" class="sort-btn" style="text-decoration:none">← Back</a>
+      </div>
+    </div>
+    <p class="meta">Current snapshot of fetch, transcription, summarization, and scoring queues. <span id="monitor-refresh-note">Refreshing every 3s.</span></p>
+  </header>
+
+  <main class="monitor-page" id="monitor-root">
+    {% include "monitor_content.html" %}
+  </main>
+  <script>
+    const REFRESH_MS = 3000;
+    const liveText = document.getElementById('monitor-live-text');
+    const refreshNote = document.getElementById('monitor-refresh-note');
+    const root = document.getElementById('monitor-root');
+    let nextRefreshAt = Date.now() + REFRESH_MS;
+    let timer = null;
+    let refreshInFlight = false;
+
+    function renderRefreshState() {
+      const remaining = Math.max(0, Math.ceil((nextRefreshAt - Date.now()) / 1000));
+      if (document.hidden) {
+        liveText.textContent = 'Auto-refresh paused';
+        refreshNote.textContent = 'Refresh pauses while this tab is hidden.';
+        return;
+      }
+      liveText.textContent = `Refreshing in ${remaining}s`;
+      refreshNote.textContent = `Refreshing every 3s. Next reload in ${remaining}s.`;
+    }
+
+    async function refreshMonitor() {
+      if (document.hidden || refreshInFlight) {
+        scheduleRefresh();
+        return;
+      }
+      refreshInFlight = true;
+      liveText.textContent = 'Refreshing now';
+      try {
+        const res = await fetch(`/monitor/content?ts=${Date.now()}`, { headers: { 'X-Requested-With': 'fetch' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const html = await res.text();
+        root.innerHTML = html;
+      } catch (err) {
+        liveText.textContent = 'Refresh failed';
+      } finally {
+        refreshInFlight = false;
+        scheduleRefresh();
+      }
+    }
+
+    function scheduleRefresh() {
+      clearTimeout(timer);
+      if (document.hidden) {
+        renderRefreshState();
+        return;
+      }
+      nextRefreshAt = Date.now() + REFRESH_MS;
+      renderRefreshState();
+      timer = setTimeout(refreshMonitor, REFRESH_MS);
+    }
+
+    document.addEventListener('visibilitychange', scheduleRefresh);
+    scheduleRefresh();
+    setInterval(renderRefreshState, 250);
+  </script>
+</body>
+</html>

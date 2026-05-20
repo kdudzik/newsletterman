@@ -2,6 +2,13 @@ from openai import OpenAI
 
 _client = None
 
+_MODEL = "gpt-4o-mini"
+_MAX_OUTPUT_TOKENS = 800
+_SHORT_TEXT_CHARS = 12000
+_CHUNK_TARGET_CHARS = 9000
+_CHUNK_OVERLAP_CHARS = 600
+_MAX_CHUNKS = 8
+
 
 def _get_client() -> OpenAI:
     global _client
@@ -18,53 +25,209 @@ def _is_polish(text: str) -> bool:
     return sum(1 for c in sample if c in _POLISH_CHARS) >= 5
 
 
-def summarize(text: str, subject: str, is_article: bool = False, is_video: bool = False, is_podcast: bool = False, language: str = "") -> str:
-    client = _get_client()
-    polish = (language == "pl") if language else _is_polish(text + " " + subject)
-    lang_instruction = (
-        "Write the summary in Polish." if polish
-        else "Write the summary in English."
-    )
+def _kind(is_article: bool = False, is_video: bool = False, is_podcast: bool = False) -> str:
     if is_podcast:
-        system_prompt = (
-            "You are a podcast summarizer. Given the description of a podcast episode, "
-            "write a concise summary in 3-5 bullet points. Be specific and highlight "
-            "the most interesting or useful content. Do not include any URLs or links. "
-            f"{lang_instruction}"
+        return "podcast"
+    if is_video:
+        return "video"
+    if is_article:
+        return "article"
+    return "newsletter"
+
+
+def _lang_instruction(polish: bool) -> str:
+    return "Write the summary in Polish." if polish else "Write the summary in English."
+
+
+def _system_prompt(kind: str, polish: bool, partial: bool = False) -> str:
+    lang_instruction = _lang_instruction(polish)
+    if partial:
+        partial_instruction = (
+            "Summarize only this fragment. Focus on concrete claims, events, and takeaways "
+            "from this section. If this fragment is mostly filler, keep the output brief. "
+            "Use 2-4 bullet points."
         )
-        user_content = f"Podcast episode: {subject}\n\n{text[:8000]}"
-    elif is_video:
-        system_prompt = (
-            "You are a video summarizer. Given a transcript or description of a YouTube video, "
-            "write a concise summary in 3-5 bullet points. Be specific and highlight "
-            "the most interesting or useful content. Do not include any URLs or links. "
-            f"{lang_instruction}"
-        )
-        user_content = f"Video: {subject}\n\n{text[:8000]}"
-    elif is_article:
-        system_prompt = (
-            "You are an article summarizer. Given the text of an article, "
-            "write a concise summary in 3-5 bullet points. Be specific and highlight "
-            "the most actionable or interesting content. Skip ads and boilerplate. "
-            f"Do not include any URLs or links. {lang_instruction}"
-        )
-        user_content = f"Article: {subject}\n\n{text[:8000]}"
     else:
-        system_prompt = (
-            "You are a newsletter summarizer. Given the text of a newsletter, "
-            "write a concise summary in 3-5 bullet points. Be specific and highlight "
-            "the most actionable or interesting content. Skip ads and boilerplate. "
-            "If the newsletter contains items with source URLs, include each URL as a "
-            "markdown link (e.g. [Czytaj więcej](url) or [Read more](url)) at the end "
-            f"of the relevant bullet. {lang_instruction}"
+        partial_instruction = (
+            "Write a concise summary in 3-5 bullet points. Be specific and highlight the "
+            "most important or useful content."
         )
-        user_content = f"Newsletter: {subject}\n\n{text[:8000]}"
+
+    if kind == "podcast":
+        return (
+            "You are a podcast summarizer. "
+            f"{partial_instruction} "
+            "For long transcripts, make sure the final summary covers all major topics from "
+            "across the episode, not just the opening section. "
+            "Do not include any URLs or links. "
+            f"{lang_instruction}"
+        )
+    if kind == "video":
+        return (
+            "You are a video summarizer. "
+            f"{partial_instruction} "
+            "Do not include any URLs or links. "
+            f"{lang_instruction}"
+        )
+    if kind == "article":
+        return (
+            "You are an article summarizer. "
+            f"{partial_instruction} "
+            "Skip ads and boilerplate. Do not include any URLs or links. "
+            f"{lang_instruction}"
+        )
+    return (
+        "You are a newsletter summarizer. "
+        f"{partial_instruction} "
+        "Skip ads and boilerplate. If the newsletter contains items with source URLs, include "
+        "each URL as a markdown link (e.g. [Czytaj więcej](url) or [Read more](url)) at the end "
+        f"of the relevant bullet. {lang_instruction}"
+    )
+
+
+def _combine_prompt(kind: str, polish: bool) -> str:
+    lang_instruction = _lang_instruction(polish)
+    link_instruction = (
+        "Preserve relevant markdown links in the final bullets where they add value. "
+        if kind == "newsletter" else
+        "Do not include any URLs or links. "
+    )
+    return (
+        f"You are a {kind} summarizer. Combine fragment summaries into one clean final summary. "
+        "Deduplicate repeated points, preserve important distinctions, and ensure the final "
+        "result covers the major topics across the whole source. Use 3-6 bullet points. "
+        "Do not mention fragment numbers. "
+        f"{link_instruction}"
+        f"{lang_instruction}"
+    )
+
+
+def _content_label(kind: str) -> str:
+    return {
+        "podcast": "Podcast episode",
+        "video": "Video",
+        "article": "Article",
+        "newsletter": "Newsletter",
+    }[kind]
+
+
+def _chat(system_prompt: str, user_content: str) -> str:
+    client = _get_client()
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        max_tokens=800,
+        model=_MODEL,
+        max_tokens=_MAX_OUTPUT_TOKENS,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ],
     )
-    return response.choices[0].message.content
+    return (response.choices[0].message.content or "").strip()
+
+
+def _find_split_point(text: str, start: int, target_end: int, hard_end: int) -> int:
+    for marker in ("\n\n", "\n", ". ", "! ", "? ", "; ", ", "):
+        idx = text.rfind(marker, start, hard_end)
+        if idx != -1 and idx >= target_end - 2000:
+            return idx + len(marker)
+    return hard_end
+
+
+def _chunk_text(text: str, target_chars: int = _CHUNK_TARGET_CHARS, overlap_chars: int = _CHUNK_OVERLAP_CHARS) -> list[str]:
+    stripped = text.strip()
+    if len(stripped) <= _SHORT_TEXT_CHARS:
+        return [stripped]
+
+    chunks = []
+    start = 0
+    total = len(stripped)
+    while start < total and len(chunks) < _MAX_CHUNKS:
+        target_end = min(total, start + target_chars)
+        hard_end = min(total, start + target_chars + 2000)
+        if target_end >= total:
+            chunks.append(stripped[start:total].strip())
+            break
+        end = _find_split_point(stripped, start, target_end, hard_end)
+        if end - start < target_chars // 2:
+            end = hard_end
+        chunk = stripped[start:end].strip()
+        if not chunk:
+            break
+        chunks.append(chunk)
+        if end >= total:
+            break
+        next_start = max(end - overlap_chars, start + 1)
+        if next_start >= total:
+            break
+        start = next_start
+
+    if not chunks:
+        return [stripped[:target_chars]]
+
+    if chunks[-1] != stripped and len(chunks) == _MAX_CHUNKS and start < total:
+        tail = stripped[max(total - target_chars, 0):].strip()
+        if tail and tail != chunks[-1]:
+            chunks[-1] = tail
+    return chunks
+
+
+def _single_pass_summary(text: str, subject: str, kind: str, polish: bool) -> str:
+    label = _content_label(kind)
+    system_prompt = _system_prompt(kind, polish, partial=False)
+    user_content = f"{label}: {subject}\n\n{text}"
+    return _chat(system_prompt, user_content)
+
+
+def _partial_summary(chunk: str, subject: str, kind: str, polish: bool, index: int, total: int) -> str:
+    label = _content_label(kind)
+    system_prompt = _system_prompt(kind, polish, partial=True)
+    user_content = (
+        f"{label}: {subject}\n"
+        f"Fragment {index}/{total}\n\n"
+        f"{chunk}"
+    )
+    return _chat(system_prompt, user_content)
+
+
+def _combine_summaries(partials: list[str], subject: str, kind: str, polish: bool) -> str:
+    label = _content_label(kind)
+    joined = "\n\n".join(
+        f"[Fragment summary {idx}/{len(partials)}]\n{summary}"
+        for idx, summary in enumerate(partials, start=1)
+    )
+    user_content = (
+        f"{label}: {subject}\n\n"
+        "Combine these fragment summaries into one final summary:\n\n"
+        f"{joined}"
+    )
+    return _chat(_combine_prompt(kind, polish), user_content)
+
+
+def summarize(
+    text: str,
+    subject: str,
+    is_article: bool = False,
+    is_video: bool = False,
+    is_podcast: bool = False,
+    language: str = "",
+) -> str:
+    kind = _kind(is_article=is_article, is_video=is_video, is_podcast=is_podcast)
+    polish = (language == "pl") if language else _is_polish(text + " " + subject)
+    clean_text = text.strip()
+    if len(clean_text) <= _SHORT_TEXT_CHARS:
+        return _single_pass_summary(clean_text, subject, kind, polish)
+
+    chunks = _chunk_text(clean_text)
+    if len(chunks) == 1:
+        return _single_pass_summary(chunks[0], subject, kind, polish)
+
+    partials = []
+    for idx, chunk in enumerate(chunks, start=1):
+        partial = _partial_summary(chunk, subject, kind, polish, idx, len(chunks))
+        if partial:
+            partials.append(partial)
+
+    if not partials:
+        return _single_pass_summary(clean_text[:_SHORT_TEXT_CHARS], subject, kind, polish)
+    if len(partials) == 1:
+        return partials[0]
+    return _combine_summaries(partials, subject, kind, polish)

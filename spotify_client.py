@@ -22,6 +22,7 @@ def _clean_description(text: str) -> str:
     return text.strip()
 _SPOTIFY_CACHE = Path(__file__).parent.parent / "spotify-export" / ".cache"
 _SCOPE = "user-library-read user-library-modify user-read-playback-position"
+_TRANSCRIPTION_ACTIVE_PATH = _CACHE_DIR / "_spotify_transcription_active.json"
 
 
 def _iso_to_rfc2822(iso: str) -> str:
@@ -54,6 +55,36 @@ def _clear_transcription_deferred(cached: dict) -> bool:
             cached.pop(key, None)
             changed = True
     return changed
+
+
+def _active_transcription_entry() -> str:
+    if not _TRANSCRIPTION_ACTIVE_PATH.exists():
+        return ""
+    try:
+        data = json.loads(_TRANSCRIPTION_ACTIVE_PATH.read_text())
+    except Exception:
+        return ""
+    return str(data.get("entry_id", "") or "")
+
+
+def _set_active_transcription(entry_id: str) -> None:
+    _CACHE_DIR.mkdir(exist_ok=True)
+    _TRANSCRIPTION_ACTIVE_PATH.write_text(json.dumps({
+        "entry_id": entry_id,
+        "started_at": datetime.now().astimezone().isoformat(),
+    }))
+
+
+def _clear_active_transcription(entry_id: str) -> None:
+    if not _TRANSCRIPTION_ACTIVE_PATH.exists():
+        return
+    try:
+        data = json.loads(_TRANSCRIPTION_ACTIVE_PATH.read_text())
+    except Exception:
+        _TRANSCRIPTION_ACTIVE_PATH.unlink(missing_ok=True)
+        return
+    if data.get("entry_id") == entry_id:
+        _TRANSCRIPTION_ACTIVE_PATH.unlink(missing_ok=True)
 
 
 def _client() -> spotipy.Spotify:
@@ -166,9 +197,18 @@ def get_article_body(entry_id: str, drive_service=None) -> str:
 
     # Podsumowanie: try Drive transcription (file may not exist yet — don't cache failure)
     if "podsumowanie" in (cached.get("from") or "").lower() and drive_service:
+        active_entry = _active_transcription_entry()
+        if active_entry and active_entry != entry_id:
+            cached["transcription_status"] = "queued"
+            _save_entry(entry_id, cached)
+            return ""
         from gdrive_audio import TranscriptDeferredError, find_episode_file, transcribe_episode
         file_id = find_episode_file(drive_service, cached.get("subject", ""))
         if file_id:
+            cached["transcription_status"] = "running"
+            cached.pop("transcription_error", None)
+            _save_entry(entry_id, cached)
+            _set_active_transcription(entry_id)
             try:
                 transcript = transcribe_episode(drive_service, file_id)
             except TranscriptDeferredError as e:
@@ -176,13 +216,23 @@ def get_article_body(entry_id: str, drive_service=None) -> str:
                 cached["transcription_deferred_until"] = e.retry_at
                 cached["transcription_error"] = e.reason
                 _save_entry(entry_id, cached)
+                _clear_active_transcription(entry_id)
                 print(f"[spotify] transcript deferred for {entry_id} until {e.retry_at}")
                 return ""
+            except Exception:
+                cached["transcription_status"] = "queued"
+                _save_entry(entry_id, cached)
+                _clear_active_transcription(entry_id)
+                raise
             if transcript:
                 cached["body"] = transcript
                 _clear_transcription_deferred(cached)
+                _clear_active_transcription(entry_id)
                 _save_entry(entry_id, cached)
                 return transcript
+            cached["transcription_status"] = "queued"
+            _save_entry(entry_id, cached)
+            _clear_active_transcription(entry_id)
         return ""
 
     # Fallback: Spotify description
@@ -241,16 +291,30 @@ class SpotifySource(Source):
     def __init__(self, drive_service=None):
         self._drive_service = drive_service
 
+    def _ensure_drive_service(self):
+        if self._drive_service is not None:
+            return self._drive_service
+        try:
+            from google_auth import build_google_service
+            self._drive_service = build_google_service(
+                "drive", "v3", "https://www.googleapis.com/auth/drive.readonly"
+            )
+        except Exception as e:
+            self.last_error = f"Drive not available for transcripts: {e}"
+            return None
+        return self._drive_service
+
     def sync(self) -> list[dict]:
         return sync_articles()
 
     def get_body(self, entry_id: str) -> str:
-        body = get_article_body(entry_id, drive_service=self._drive_service)
+        drive_service = self._ensure_drive_service() if "podsumowanie" in (_load_entry(entry_id).get("from") or "").lower() else self._drive_service
+        body = get_article_body(entry_id, drive_service=drive_service)
         cached = _load_entry(entry_id)
         deferred_until = _deferred_until(cached)
         if deferred_until and deferred_until > datetime.now().astimezone():
             self.last_error = cached.get("transcription_error", "")
-        elif self.last_error.startswith("Transcript quota reached"):
+        elif self.last_error.startswith("Transcript quota reached") or self.last_error.startswith("Drive not available for transcripts"):
             self.clear_error()
         return body
 

@@ -240,21 +240,30 @@ from source_base import Source
 class GmailSource(Source):
     prefix = "gmail"
 
-    def __init__(self, service):
+    def __init__(self, service=None):
         self._service = service
 
+    def _service_for_actions(self):
+        return self._service or get_service()
+
     def sync(self) -> list[dict]:
-        return sync_newsletters(self._service)
+        service = self._service_for_actions()
+        self._service = service
+        return sync_newsletters(service)
 
     def get_body(self, entry_id: str) -> str:
         service = get_service()  # fresh per call — httplib2 is not thread-safe
         return get_newsletter_body(entry_id, service).get("body", "")
 
     def mark_done(self, entry_id: str) -> bool:
-        return remove_read_later_label(entry_id, self._service)
+        service = self._service_for_actions()
+        self._service = service
+        return remove_read_later_label(entry_id, service)
 
     def mark_unread_entry(self, entry_id: str) -> bool:
-        return restore_read_later_label(entry_id, self._service)
+        service = self._service_for_actions()
+        self._service = service
+        return restore_read_later_label(entry_id, service)
 
     def list_cached(self) -> list[dict]:
         return list_newsletters_cached()

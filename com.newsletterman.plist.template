@@ -15,6 +15,18 @@
   <key>WorkingDirectory</key>
   <string>__REPO_DIR__</string>
 
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PORT</key>
+    <string>7431</string>
+    <key>UVICORN_RELOAD</key>
+    <string>0</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+
   <key>RunAtLoad</key>
   <true/>
 

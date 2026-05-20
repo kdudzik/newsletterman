@@ -3,10 +3,10 @@ import re
 import tempfile
 from pathlib import Path
 from shutil import which
-from datetime import datetime, timedelta
 
 from googleapiclient.http import MediaIoBaseDownload
 from pydub import AudioSegment
+from provider_state import clear_provider_retry, infer_retry_at, is_rate_limit_error, set_provider_retry
 
 _FOLDER_NAME = "3R Podsumowania tygodnia"
 _FOLDER_IDS: list[str] = []
@@ -19,13 +19,6 @@ class TranscriptDeferredError(RuntimeError):
         super().__init__(reason)
         self.retry_at = retry_at
         self.reason = reason
-
-
-def _next_retry_at() -> str:
-    now = datetime.now().astimezone()
-    retry_local = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
-    return retry_local.isoformat()
-
 
 def _is_quota_error(exc: Exception) -> bool:
     text = str(exc).lower()
@@ -143,17 +136,39 @@ def _transcribe_file(fp) -> str:
             )
         except Exception as e:
             if _is_quota_error(e):
+                retry_at = infer_retry_at(str(e))
+                set_provider_retry(
+                    "groq_transcription",
+                    retry_at,
+                    f"Groq transcription is rate limited. {str(e)}",
+                )
                 raise TranscriptDeferredError(
-                    retry_at=_next_retry_at(),
-                    reason="Transcript quota reached for today. Podcast transcription will retry tomorrow.",
+                    retry_at=retry_at.isoformat(),
+                    reason="Groq transcript quota reached. Podcast transcription will retry later.",
                 ) from e
             raise
+        clear_provider_retry("groq_transcription")
         return result if isinstance(result, str) else result.text
     else:
         import openai
-        result = openai.OpenAI().audio.transcriptions.create(
-            model="whisper-1",
-            file=fp,
-            response_format="text",
-        )
+        try:
+            result = openai.OpenAI().audio.transcriptions.create(
+                model="whisper-1",
+                file=fp,
+                response_format="text",
+            )
+        except Exception as e:
+            if is_rate_limit_error(str(e)):
+                retry_at = infer_retry_at(str(e))
+                set_provider_retry(
+                    "openai_transcription",
+                    retry_at,
+                    f"OpenAI transcription is rate limited. {str(e)}",
+                )
+                raise TranscriptDeferredError(
+                    retry_at=retry_at.isoformat(),
+                    reason="OpenAI transcript quota reached. Podcast transcription will retry later.",
+                ) from e
+            raise
+        clear_provider_retry("openai_transcription")
         return result if isinstance(result, str) else result.text

@@ -2,11 +2,14 @@ import os
 import re
 import html
 import asyncio
+import unicodedata
 from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from dotenv import load_dotenv
+from threading import Event, Lock, Thread
+import time
 
 load_dotenv(Path(__file__).parent / ".env")
 from fastapi import FastAPI, HTTPException, Request
@@ -23,6 +26,14 @@ from youtube_client import YouTubeSource, build_service as _yt_build_service
 from spotify_client import SpotifySource
 from summarizer import summarize
 import scorer as _scorer
+from provider_state import (
+    clear_provider_retry,
+    infer_retry_at,
+    is_rate_limit_error,
+    provider_error,
+    provider_retry_at,
+    set_provider_retry,
+)
 try:
     from config import AUTHOR_ALIASES, PERSONAL_CONTEXT_FILE
 except ImportError:
@@ -32,6 +43,15 @@ except ImportError:
 def _log(msg: str) -> None:
     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
     print(f"[{ts}] {msg}")
+
+
+_BG_SYNC_INTERVAL_SECONDS = 15
+_SUMMARY_BODY_READY_BATCH = 4
+_SUMMARY_FETCH_BATCH = 1
+_OPENAI_CHAT_PROVIDER = "openai_chat"
+_MONITOR_SNAPSHOT_TTL_SECONDS = 2.0
+_SUMMARY_VERSION = "hierarchical_v2"
+_FAST_DRAIN_THRESHOLD = 10
 
 
 def _context_file() -> str:
@@ -48,6 +68,46 @@ def _is_title_only_summary(cached: dict) -> bool:
     if not summary or summary == subject:
         return True
     return False
+
+
+def _normalize_topic(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _subject_topics(subject: str) -> list[str]:
+    match = re.search(r"\((.*?)\)", subject or "")
+    if not match:
+        return []
+    raw_topics = re.split(r"\s*-\s*", match.group(1))
+    topics = []
+    for topic in raw_topics:
+        normalized = _normalize_topic(topic)
+        if normalized and normalized not in topics:
+            topics.append(normalized)
+    return topics
+
+
+def _is_incomplete_multitopic_summary(cached: dict) -> bool:
+    """Detect stale summaries that only cover the opening segment of a multi-topic podcast."""
+    if cached.get("source") != "spotify":
+        return False
+    if cached.get("summary_version") == _SUMMARY_VERSION:
+        return False
+    summary = (cached.get("summary") or "").strip()
+    body = cached.get("body") or ""
+    topics = _subject_topics(cached.get("subject", ""))
+    if not summary or len(body) < 12000 or len(topics) < 2:
+        return False
+
+    summary_words = set(_normalize_topic(summary).split())
+    mentioned = 0
+    for topic in topics:
+        topic_words = [word for word in topic.split() if len(word) >= 4]
+        if topic_words and all(word in summary_words for word in topic_words):
+            mentioned += 1
+    return mentioned < len(topics)
 
 
 def _deferred_retry_at(cached: dict) -> datetime | None:
@@ -104,6 +164,8 @@ def _score_entry(entry_id: str) -> None:
         if changed:
             source.save_entry(entry_id, cached)
     except Exception as e:
+        if is_rate_limit_error(str(e)):
+            set_provider_retry(_OPENAI_CHAT_PROVIDER, infer_retry_at(str(e)), str(e))
         _log(f"[score] error {entry_id}: {e}")
 
 
@@ -113,7 +175,7 @@ def _summarize_entry(entry_id: str) -> None:
         source = registry.for_entry(entry_id)
         cached = source.load_entry(entry_id)
         has_summary = bool(cached.get("summary"))
-        if has_summary and not _is_title_only_summary(cached):
+        if has_summary and not _is_title_only_summary(cached) and not _is_incomplete_multitopic_summary(cached):
             _score_entry(entry_id)
             return
         body = source.get_body(entry_id)
@@ -129,12 +191,15 @@ def _summarize_entry(entry_id: str) -> None:
             language = cached.get("transcript_language", "") if source.is_video else cached.get("language", "") if source.is_podcast else ""
             summary = summarize(body, subject, is_article=source.is_article, is_video=source.is_video, is_podcast=source.is_podcast, language=language)
         cached["summary"] = summary
+        cached["summary_version"] = _SUMMARY_VERSION
         source.save_entry(entry_id, cached)
         _log(f"[summarize] done: {entry_id}")
         if entry_id not in _add_events_logged:
             _append_queue_event("add", entry_id, cached)
         _score_entry(entry_id)
     except Exception as e:
+        if is_rate_limit_error(str(e)):
+            set_provider_retry(_OPENAI_CHAT_PROVIDER, infer_retry_at(str(e)), str(e))
         _log(f"[summarize] error {entry_id}: {e}")
 
 
@@ -147,11 +212,17 @@ def _all_cache_files():
         yield f, f.stem
 
 
-async def _ensure_summaries() -> None:
-    """Background task: summarize all cached entries missing a summary."""
+def _ensure_summaries_sync() -> None:
+    """Background task: process a small batch, favoring items whose body is already cached."""
     import json as _json
-    loop = asyncio.get_event_loop()
+    retry_at = provider_retry_at(_OPENAI_CHAT_PROVIDER)
+    if retry_at and retry_at > datetime.now().astimezone():
+        _log(f"[summarize] paused until {retry_at.isoformat()} due to OpenAI rate limit")
+        return
+    if retry_at:
+        clear_provider_retry(_OPENAI_CHAT_PROVIDER)
     _log("[summarize] starting pass")
+    pending: list[tuple[Path, str, dict]] = []
     for f, entry_id in _all_cache_files():
         try:
             entry = _json.loads(f.read_text())
@@ -160,20 +231,55 @@ async def _ensure_summaries() -> None:
         retry_at = _deferred_retry_at(entry)
         if retry_at and retry_at > datetime.now().astimezone():
             continue
-        if "subject" in entry and (not entry.get("summary") or _is_title_only_summary(entry)):
-            source = registry.for_entry(entry_id)
-            await loop.run_in_executor(None, _summarize_entry, entry_id)
-            if source.throttle_after_body:
-                await asyncio.sleep(1)
+        if "subject" in entry and (
+            not entry.get("summary")
+            or _is_title_only_summary(entry)
+            or _is_incomplete_multitopic_summary(entry)
+        ):
+            pending.append((f, entry_id, entry))
+
+    if not pending:
+        return
+
+    fast_drain = len(pending) <= _FAST_DRAIN_THRESHOLD
+    ready_limit = 9999 if fast_drain else _SUMMARY_BODY_READY_BATCH
+    fetch_limit = 9999 if fast_drain else _SUMMARY_FETCH_BATCH
+    processed_ready = 0
+    processed_fetch = 0
+    for _, entry_id, entry in pending:
+        body_ready = bool(entry.get("body"))
+        if body_ready and processed_ready >= ready_limit:
+            continue
+        if not body_ready and processed_fetch >= fetch_limit:
+            continue
+        source = registry.for_entry(entry_id)
+        _summarize_entry(entry_id)
+        if body_ready:
+            processed_ready += 1
+        else:
+            processed_fetch += 1
+        if source.throttle_after_body and not body_ready:
+            time.sleep(1)
+        if processed_ready >= ready_limit and processed_fetch >= fetch_limit:
+            break
 
 
 _scoring_in_progress: set[str] = set()
+_monitor_snapshot_cache: dict = {"ts": 0.0, "data": None}
+_monitor_snapshot_lock = Lock()
+_bg_thread: Thread | None = None
+_bg_stop = Event()
 
 
-async def _ensure_scores() -> None:
+def _ensure_scores_sync() -> None:
     """Background task: score all cached entries that have a summary but no scores yet."""
     import json as _json
-    loop = asyncio.get_event_loop()
+    retry_at = provider_retry_at(_OPENAI_CHAT_PROVIDER)
+    if retry_at and retry_at > datetime.now().astimezone():
+        _log(f"[score] paused until {retry_at.isoformat()} due to OpenAI rate limit")
+        return
+    if retry_at:
+        clear_provider_retry(_OPENAI_CHAT_PROVIDER)
     for f, entry_id in _all_cache_files():
         if entry_id in _scoring_in_progress:
             continue
@@ -187,7 +293,7 @@ async def _ensure_scores() -> None:
         if needs_cleanup or needs_scoring:
             _scoring_in_progress.add(entry_id)
             try:
-                await loop.run_in_executor(None, _score_entry, entry_id)
+                _score_entry(entry_id)
             finally:
                 _scoring_in_progress.discard(entry_id)
 
@@ -208,24 +314,32 @@ def _sync_all_sources(label: str = "") -> list[int]:
     return counts
 
 
-async def _bg_sync():
-    while True:
-        await asyncio.sleep(60)
+def _bg_sync_loop() -> None:
+    while not _bg_stop.wait(_BG_SYNC_INTERVAL_SECONDS):
         try:
             _sync_all_sources()
         except Exception as e:
             _log(f"[bg sync] {e}")
-        await _ensure_summaries()
-        await _ensure_scores()
+        _ensure_summaries_sync()
+        _ensure_scores_sync()
+
+
+def _startup_warmup_sync() -> None:
+    try:
+        _sync_all_sources("startup")
+    except Exception as e:
+        _log(f"[startup] sync failed: {e}")
+    _ensure_summaries_sync()
+    _ensure_scores_sync()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _add_events_logged
+    global _add_events_logged, _bg_thread
     _add_events_logged = _load_add_events_logged()
+    _bg_stop.clear()
 
-    gmail_service = get_service()
-    registry.register(GmailSource(gmail_service), fallback=True)
+    registry.register(GmailSource(), fallback=True)
 
     if token := os.getenv("RAINDROP_TEST_TOKEN", ""):
         registry.register(RaindropSource(token))
@@ -242,23 +356,16 @@ async def lifespan(app: FastAPI):
 
     if os.getenv("SPOTIFY_ENABLED", "").lower() in ("1", "true", "yes"):
         try:
-            try:
-                drive_service = build_google_service(
-                    "drive", "v3", "https://www.googleapis.com/auth/drive.readonly"
-                )
-            except Exception as e:
-                _log(f"[drive] not available (transcription disabled): {e}")
-                drive_service = None
-            registry.register(SpotifySource(drive_service=drive_service))
+            registry.register(SpotifySource())
         except Exception as e:
             _log(f"[spotify] not available: {e}")
 
-    _sync_all_sources("startup")
-
-    asyncio.create_task(_bg_sync())
-    asyncio.create_task(_ensure_summaries())
-    asyncio.create_task(_ensure_scores())
+    Thread(target=_startup_warmup_sync, name="startup-warmup", daemon=True).start()
+    if _bg_thread is None or not _bg_thread.is_alive():
+        _bg_thread = Thread(target=_bg_sync_loop, name="bg-sync", daemon=True)
+        _bg_thread.start()
     yield
+    _bg_stop.set()
 
 
 def _sender_name(from_str: str) -> str:
@@ -464,6 +571,179 @@ def _source_status(prefix: str) -> tuple[bool, str]:
     return (True, s.last_error) if s else (False, "")
 
 
+def _provider_health() -> list[dict]:
+    providers = [
+        ("openai_chat", "openai"),
+        ("groq_transcription", "groq"),
+        ("openai_transcription", "openai-transcription"),
+    ]
+    rows = []
+    now = datetime.now().astimezone()
+    for key, label in providers:
+        retry_at = provider_retry_at(key)
+        reason = provider_error(key)
+        blocked = bool(retry_at and retry_at > now)
+        rows.append({
+            "source": label,
+            "ok": not blocked,
+            "error": reason if blocked else "",
+            "retry_at": retry_at.isoformat() if blocked and retry_at else "",
+        })
+    return rows
+
+
+def _build_monitor_snapshot() -> dict:
+    source_health = []
+    for prefix in ("gmail", "raindrop", "wyborcza", "youtube", "spotify"):
+        enabled, error = _source_status(prefix)
+        if enabled:
+            source_health.append({
+                "source": prefix,
+                "ok": not bool(error),
+                "error": error,
+            })
+    return {
+        "counts": _monitor_counts(),
+        "rows": _monitor_rows(),
+        "source_health": source_health,
+        "provider_health": _provider_health(),
+        "recent_lines": _recent_pipeline_lines(),
+    }
+
+
+def _get_monitor_snapshot() -> dict:
+    now = time.time()
+    with _monitor_snapshot_lock:
+        cached = _monitor_snapshot_cache.get("data")
+        ts = float(_monitor_snapshot_cache.get("ts", 0.0))
+        if cached is not None and now - ts < _MONITOR_SNAPSHOT_TTL_SECONDS:
+            return cached
+
+    data = _build_monitor_snapshot()
+    with _monitor_snapshot_lock:
+        _monitor_snapshot_cache["ts"] = now
+    _monitor_snapshot_cache["data"] = data
+    return data
+
+
+def _run_pipeline_pass(label: str = "") -> None:
+    if label:
+        try:
+            _sync_all_sources(label)
+        except Exception as e:
+            _log(f"[pipeline {label}] {e}")
+    _ensure_summaries_sync()
+    _ensure_scores_sync()
+
+
+def _entry_stage(entry_id: str, entry: dict) -> str:
+    if entry.get("read"):
+        return "done"
+    if entry.get("summary") and not _is_title_only_summary(entry) and not _is_incomplete_multitopic_summary(entry):
+        if (
+            entry.get("relevance_score") is None
+            or entry.get("lean") is None
+            or entry.get("trust_score") is None
+        ):
+            return "scoring"
+        return "done"
+    if entry.get("transcription_status") == "running":
+        return "transcribing"
+    retry_at = _deferred_retry_at(entry)
+    if (
+        entry.get("source") == "spotify"
+        and "podsumowanie" in (entry.get("from") or "").lower()
+        and not entry.get("body")
+    ):
+        return "awaiting_transcript"
+    if not entry.get("body"):
+        return "fetching"
+    if not entry.get("summary") or _is_title_only_summary(entry) or _is_incomplete_multitopic_summary(entry):
+        return "summarizing"
+    return "done"
+
+
+def _monitor_rows(limit_per_stage: int = 25) -> dict[str, list[dict]]:
+    import json as _json
+
+    stage_rows: dict[str, list[dict]] = {
+        "fetching": [],
+        "awaiting_transcript": [],
+        "transcribing": [],
+        "summarizing": [],
+        "scoring": [],
+        "done": [],
+    }
+    for f, entry_id in _all_cache_files():
+        try:
+            entry = _json.loads(f.read_text())
+        except Exception:
+            continue
+        if "subject" not in entry:
+            continue
+        stage = _entry_stage(entry_id, entry)
+        row = {
+            "id": entry_id,
+            "subject": entry.get("subject", entry_id),
+            "source": entry.get("source", "gmail"),
+            "author": _sender_name(entry.get("from", "")),
+            "date": entry.get("date", ""),
+            "minutes": entry.get("minutes", 0),
+            "body_chars": len(entry.get("body", "") or ""),
+            "summary_chars": len(entry.get("summary", "") or ""),
+            "retry_at": entry.get("transcription_deferred_until", ""),
+            "error": entry.get("transcription_error", ""),
+            "url": entry.get("url", entry.get("gmail_url", "")),
+        }
+        stage_rows.setdefault(stage, []).append(row)
+
+    def _sort_key(row: dict) -> float:
+        return _date_ts(row.get("date", ""))
+
+    for stage, rows in stage_rows.items():
+        rows.sort(key=_sort_key, reverse=True)
+        stage_rows[stage] = rows[:limit_per_stage]
+    return stage_rows
+
+
+def _monitor_counts() -> dict[str, int]:
+    import json as _json
+
+    counts = {
+        "fetching": 0,
+        "awaiting_transcript": 0,
+        "transcribing": 0,
+        "summarizing": 0,
+        "scoring": 0,
+        "done": 0,
+        "total": 0,
+    }
+    for f, entry_id in _all_cache_files():
+        try:
+            entry = _json.loads(f.read_text())
+        except Exception:
+            continue
+        if "subject" not in entry:
+            continue
+        stage = _entry_stage(entry_id, entry)
+        counts[stage] = counts.get(stage, 0) + 1
+        counts["total"] += 1
+    return counts
+
+
+def _recent_pipeline_lines(limit: int = 40) -> list[str]:
+    path = Path(__file__).parent / "logs" / "out.log"
+    if not path.exists():
+        return []
+    patterns = ("[summarize]", "[score]", "[gdrive]", "[spotify]", "sync failed")
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except Exception:
+        return []
+    selected = [line for line in lines if any(pattern in line for pattern in patterns)]
+    return selected[-limit:]
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     all_entries = []
@@ -500,9 +780,9 @@ async def index(request: Request):
 
 @app.post("/refresh")
 async def refresh():
-    counts = _sync_all_sources("refresh")
-    asyncio.create_task(_ensure_summaries())
-    asyncio.create_task(_ensure_scores())
+    loop = asyncio.get_event_loop()
+    counts = await loop.run_in_executor(None, _sync_all_sources, "refresh")
+    Thread(target=_run_pipeline_pass, name="refresh-pipeline", daemon=True).start()
     _, wyborcza_error = _source_status("wyborcza")
     _, youtube_error = _source_status("youtube")
     _, spotify_error = _source_status("spotify")
@@ -518,7 +798,7 @@ async def refresh():
 async def rescore():
     import json as _json
 
-    async def _clear_and_rescore():
+    def _clear_and_rescore():
         cache_dir = Path(__file__).parent / ".newsletter_cache"
         if not cache_dir.exists():
             return
@@ -531,9 +811,9 @@ async def rescore():
                 for k in ("relevance_score", "relevance_note", "challenge_score", "challenge_note", "lean", "lean_note"):
                     entry.pop(k, None)
                 f.write_text(_json.dumps(entry, ensure_ascii=False, indent=2))
-        await _ensure_scores()
+        _ensure_scores_sync()
 
-    asyncio.create_task(_clear_and_rescore())
+    Thread(target=_clear_and_rescore, name="rescore", daemon=True).start()
     return {"status": "rescoring in background"}
 
 
@@ -553,7 +833,7 @@ async def entry_detail(request: Request, entry_id: str):
 async def entry_summarize(entry_id: str):
     source = registry.for_entry(entry_id)
     cached = source.load_entry(entry_id)
-    if cached.get("summary") and not _is_title_only_summary(cached):
+    if cached.get("summary") and not _is_title_only_summary(cached) and not _is_incomplete_multitopic_summary(cached):
         return {"summary": cached["summary"]}
     loop = asyncio.get_event_loop()
     body = await loop.run_in_executor(None, source.get_body, entry_id)
@@ -577,8 +857,9 @@ async def entry_summarize(entry_id: str):
         language = cached.get("transcript_language", "") if source.is_video else cached.get("language", "") if source.is_podcast else ""
         summary = summarize(body, subject, is_article=source.is_article, is_video=source.is_video, is_podcast=source.is_podcast, language=language)
     cached["summary"] = summary
+    cached["summary_version"] = _SUMMARY_VERSION
     source.save_entry(entry_id, cached)
-    asyncio.create_task(asyncio.get_event_loop().run_in_executor(None, _score_entry, entry_id))
+    asyncio.get_event_loop().run_in_executor(None, _score_entry, entry_id)
     return {"summary": summary, "summary_html": str(_markdown_summary(summary))}
 
 
@@ -767,7 +1048,37 @@ async def queue_history_page(request: Request):
     return templates.TemplateResponse("queue_history.html", {"request": request})
 
 
+@app.get("/monitor", response_class=HTMLResponse)
+async def monitor_page(request: Request):
+    loop = asyncio.get_event_loop()
+    snapshot = await loop.run_in_executor(None, _get_monitor_snapshot)
+    return templates.TemplateResponse("monitor.html", {
+        "request": request,
+        **snapshot,
+    })
+
+
+@app.get("/monitor/content", response_class=HTMLResponse)
+async def monitor_content(request: Request):
+    loop = asyncio.get_event_loop()
+    snapshot = await loop.run_in_executor(None, _get_monitor_snapshot)
+    return templates.TemplateResponse("monitor_content.html", {
+        "request": request,
+        **snapshot,
+    })
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 7431))
-    uvicorn.run("main:app", host="127.0.0.1", port=port, reload=True, reload_includes=["*.css", "*.html", "*.js"])
+    reload_enabled = os.getenv("UVICORN_RELOAD", "").lower() in ("1", "true", "yes")
+    uvicorn.run(
+        "main:app",
+        host="127.0.0.1",
+        port=port,
+        reload=reload_enabled,
+        reload_includes=["*.css", "*.html", "*.js"] if reload_enabled else None,
+        loop="asyncio",
+        http="h11",
+        timeout_keep_alive=2,
+    )

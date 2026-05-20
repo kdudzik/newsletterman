@@ -1,0 +1,107 @@
+<section class="monitor-summary">
+  <div class="monitor-stat">
+    <div class="monitor-stat-label">Total</div>
+    <div class="monitor-stat-value">{{ counts.total }}</div>
+  </div>
+  <div class="monitor-stat">
+    <div class="monitor-stat-label">Fetching</div>
+    <div class="monitor-stat-value">{{ counts.fetching }}</div>
+  </div>
+  <div class="monitor-stat">
+    <div class="monitor-stat-label">Awaiting transcript</div>
+    <div class="monitor-stat-value">{{ counts.awaiting_transcript }}</div>
+  </div>
+  <div class="monitor-stat">
+    <div class="monitor-stat-label">Transcribing</div>
+    <div class="monitor-stat-value">{{ counts.transcribing }}</div>
+  </div>
+  <div class="monitor-stat">
+    <div class="monitor-stat-label">Summarizing</div>
+    <div class="monitor-stat-value">{{ counts.summarizing }}</div>
+  </div>
+  <div class="monitor-stat">
+    <div class="monitor-stat-label">Scoring</div>
+    <div class="monitor-stat-value">{{ counts.scoring }}</div>
+  </div>
+  <div class="monitor-stat">
+    <div class="monitor-stat-label">Ready</div>
+    <div class="monitor-stat-value">{{ counts.done }}</div>
+  </div>
+</section>
+
+<section class="monitor-panel">
+  <h2>Source health</h2>
+  <div class="monitor-health-list">
+    {% for item in source_health %}
+    <div class="monitor-health {{ 'monitor-health--ok' if item.ok else 'monitor-health--error' }}">
+      <div class="monitor-health-name">{{ item.source }}</div>
+      <div class="monitor-health-state">{{ 'OK' if item.ok else 'Error' }}</div>
+      <div class="monitor-health-error">{{ item.error or 'No active errors.' }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="monitor-panel">
+  <h2>AI provider health</h2>
+  <div class="monitor-health-list">
+    {% for item in provider_health %}
+    <div class="monitor-health {{ 'monitor-health--ok' if item.ok else 'monitor-health--error' }}">
+      <div class="monitor-health-name">{{ item.source }}</div>
+      <div class="monitor-health-state">{{ 'OK' if item.ok else 'Blocked' }}</div>
+      <div class="monitor-health-error">
+        {% if item.error %}{{ item.error }}{% else %}No active errors.{% endif %}
+        {% if item.retry_at %}<br>Retry at {{ item.retry_at }}{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+{% for stage, label in [('fetching', 'Fetching body'), ('awaiting_transcript', 'Awaiting transcript'), ('transcribing', 'Transcribing'), ('summarizing', 'Summarizing'), ('scoring', 'Scoring')] %}
+<section class="monitor-panel">
+  <div class="monitor-section-head">
+    <h2>{{ label }}</h2>
+    <span class="meta">{{ counts[stage] }} item{{ '' if counts[stage] == 1 else 's' }}</span>
+  </div>
+  {% if rows[stage] %}
+  <div class="monitor-table">
+    {% for row in rows[stage] %}
+    <div class="monitor-row">
+      <div class="monitor-row-main">
+        <div class="monitor-row-title">
+          {% if row.url %}<a href="{{ row.url }}" target="_blank" rel="noopener">{{ row.subject | unescape }}</a>{% else %}{{ row.subject | unescape }}{% endif %}
+        </div>
+        <div class="monitor-row-meta">
+          <span>{{ row.source }}</span>
+          {% if row.author %}<span>· {{ row.author }}</span>{% endif %}
+          {% if row.minutes %}<span>· {{ row.minutes }} min</span>{% endif %}
+          {% if row.body_chars %}<span>· body {{ row.body_chars }}</span>{% endif %}
+          {% if row.summary_chars %}<span>· summary {{ row.summary_chars }}</span>{% endif %}
+        </div>
+      </div>
+      <div class="monitor-row-side">
+        {% if row.retry_at %}<div class="monitor-row-note">retry {{ row.retry_at }}</div>{% endif %}
+        {% if row.error %}<div class="monitor-row-error">{{ row.error }}</div>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">Nothing queued here right now.</p>
+  {% endif %}
+</section>
+{% endfor %}
+
+<section class="monitor-panel">
+  <div class="monitor-section-head">
+    <h2>Recent pipeline log</h2>
+    <span class="meta">{{ recent_lines | length }} lines</span>
+  </div>
+  {% if recent_lines %}
+  <pre class="monitor-log">{% for line in recent_lines %}{{ line }}
+{% endfor %}</pre>
+  {% else %}
+  <p class="empty">No recent pipeline lines yet.</p>
+  {% endif %}
+</section>
