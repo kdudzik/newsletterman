@@ -50,7 +50,8 @@ def _system_prompt(kind: str, polish: bool, partial: bool = False) -> str:
     else:
         partial_instruction = (
             "Write a concise summary in 3-5 bullet points. Be specific and highlight the "
-            "most important or useful content."
+            "most important or useful content. Use neutral, reportorial language — describe "
+            "what the article reports or argues without adopting its emotional tone or framing."
         )
 
     if kind == "podcast":

@@ -247,7 +247,7 @@ def _ensure_summaries_sync() -> None:
     processed_ready = 0
     processed_fetch = 0
     for _, entry_id, entry in pending:
-        body_ready = bool(entry.get("body"))
+        body_ready = bool(entry.get("body") or entry.get("description"))
         if body_ready and processed_ready >= ready_limit:
             continue
         if not body_ready and processed_fetch >= fetch_limit:

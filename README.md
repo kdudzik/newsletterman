@@ -78,7 +78,7 @@ To regenerate `GOOGLE_REFRESH_TOKEN` (now covering Gmail + YouTube scopes), run 
 Notes:
 - This avoids automating login, which is protected by reCAPTCHA.
 - If the cookie export stops working, the app keeps showing cached Wyborcza items and displays a warning banner in the UI.
-- The current implementation treats Wyborcza items as a read queue locally; it does not yet remove them from Schowek remotely.
+- Marking a Wyborcza article done removes it from Schowek remotely.
 
 ## Customizing author names
 

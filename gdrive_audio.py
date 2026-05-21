@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import tempfile
@@ -86,6 +87,31 @@ def find_episode_file(drive_service, subject: str) -> str | None:
     return None
 
 
+def _chunk_cache_path(file_id: str) -> str:
+    return f"/tmp/newsletterman_chunks_{file_id}.json"
+
+
+def _load_chunk_cache(file_id: str) -> dict[int, str]:
+    path = _chunk_cache_path(file_id)
+    try:
+        with open(path) as f:
+            return {int(k): v for k, v in json.load(f).items()}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_chunk_cache(file_id: str, cache: dict[int, str]) -> None:
+    with open(_chunk_cache_path(file_id), "w") as f:
+        json.dump(cache, f)
+
+
+def _clear_chunk_cache(file_id: str) -> None:
+    try:
+        os.unlink(_chunk_cache_path(file_id))
+    except FileNotFoundError:
+        pass
+
+
 def transcribe_episode(drive_service, file_id: str, subject: str = "") -> str:
     """Download mp3 from Drive, split into chunks, transcribe via Groq (fallback: OpenAI)."""
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
@@ -97,7 +123,7 @@ def transcribe_episode(drive_service, file_id: str, subject: str = "") -> str:
             _, done = downloader.next_chunk()
     print(f"[gdrive] downloaded {os.path.getsize(tmp_path) // (1024*1024)} MB")
     try:
-        return _transcribe_chunked(tmp_path, subject=subject)
+        return _transcribe_chunked(tmp_path, file_id=file_id, subject=subject)
     finally:
         os.unlink(tmp_path)
 
@@ -106,24 +132,37 @@ def _build_whisper_prompt(subject: str) -> str:
     return f"Podcast o polityce zagranicznej. Odcinek: {subject}" if subject else "Podcast o polityce zagranicznej."
 
 
-def _transcribe_chunked(mp3_path: str, subject: str = "") -> str:
+def _transcribe_chunked(mp3_path: str, file_id: str = "", subject: str = "") -> str:
     _configure_audio_tools()
     audio = AudioSegment.from_mp3(mp3_path)
     duration_min = len(audio) // 60000
     chunks = [audio[i:i + CHUNK_MS] for i in range(0, len(audio), CHUNK_MS)]
     print(f"[gdrive] transcribing {duration_min}min audio in {len(chunks)} chunk(s)")
     prompt = _build_whisper_prompt(subject)
-    parts = []
+    cache = _load_chunk_cache(file_id) if file_id else {}
+    if cache:
+        print(f"[gdrive] resuming from chunk cache: {len(cache)}/{len(chunks)} already done")
+    parts: list[str] = [""] * len(chunks)
+    for i, text in cache.items():
+        if i < len(chunks):
+            parts[i] = text
     for i, chunk in enumerate(chunks):
+        if parts[i]:
+            continue
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tf:
             chunk_path = tf.name
         try:
             chunk.export(chunk_path, format="mp3")
             with open(chunk_path, "rb") as fp:
-                parts.append(_transcribe_file(fp, prompt=prompt))
+                parts[i] = _transcribe_file(fp, prompt=prompt)
+            if file_id:
+                cache[i] = parts[i]
+                _save_chunk_cache(file_id, cache)
             print(f"[gdrive] chunk {i+1}/{len(chunks)} done")
         finally:
             os.unlink(chunk_path)
+    if file_id:
+        _clear_chunk_cache(file_id)
     transcript = "\n\n".join(parts)
     print(f"[gdrive] transcript {len(transcript)} chars")
     return transcript

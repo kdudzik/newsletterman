@@ -15,8 +15,15 @@ Use this scale:
 - XR: Extreme Right
 
 Most reading items (tech, science, finance, lifestyle) are C. Reserve L/R for content with \
-clear ideological framing or advocacy. Reserve XL/XR only for explicitly partisan or \
-extremist content.
+clear ideological framing or advocacy. Reserve XL/XR only for content that itself explicitly \
+advocates for or promotes an extremist political position. Critical rule: negative framing, \
+alarming tone, or reporting on extremist/intolerant views does NOT make an article XR or XL \
+— only articles that endorse, celebrate, or call for extreme political action qualify. \
+Data journalism, surveys, and analytical pieces on immigration or religion are typically C or \
+at most R/L depending on editorial slant. Similarly, journalistic profiles or investigations of \
+extremist movements (incels, neo-nazis, etc.) are C or L — the presence of words like \
+"misogyny", "hate movement", or "extremist ideology" in the summary means those are the \
+article's subject, not its position.
 
 Write the lean_note in the SAME LANGUAGE as the summary.
 
