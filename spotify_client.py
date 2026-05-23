@@ -161,7 +161,7 @@ def sync_articles(_service=None) -> list[dict]:
             cached.pop("read", None)  # episode is in saved list → treat as unread
             _save_entry(entry_id, cached)
             entries.append(entry)
-        results = sp.next(results) if results.get("next") else None
+        results = _client().next(results) if results.get("next") else None
     return entries
 
 
