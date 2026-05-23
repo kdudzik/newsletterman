@@ -2,6 +2,7 @@ import json
 import os
 import re
 import tempfile
+import unicodedata
 from pathlib import Path
 from shutil import which
 
@@ -64,8 +65,21 @@ def _resolve_folder_ids(drive_service) -> list[str]:
     return _FOLDER_IDS
 
 
+def _extract_keywords(subject: str) -> list[str]:
+    """Extract country/topic keywords from the parenthesized part of an episode title."""
+    m = re.search(r"\(([^)]+)\)", subject)
+    if not m:
+        return []
+    return [unicodedata.normalize("NFC", kw.strip().lower()) for kw in re.split(r"[-/]", m.group(1)) if kw.strip()]
+
+
 def find_episode_file(drive_service, subject: str) -> str | None:
-    """Return file_id for the Drive mp3 whose title contains the episode date, or None."""
+    """Return file_id for the Drive mp3 matching the episode, or None.
+
+    Primary match: date string (YYYY-MM-DD) in filename.
+    Fallback: all-keyword match on country/topic names from the title parentheses,
+    for cases where Spotify and Drive use different dates for the same episode.
+    """
     m = re.search(r"(\d{4}-\d{2}-\d{2})", subject)
     if not m:
         return None
@@ -74,6 +88,8 @@ def find_episode_file(drive_service, subject: str) -> str | None:
     parent_filter = ""
     if folder_ids:
         parent_filter = " and (" + " or ".join(f"'{folder_id}' in parents" for folder_id in folder_ids) + ")"
+
+    # Primary: exact date match
     res = drive_service.files().list(
         q=f"name contains '{date}' and mimeType='audio/mpeg' and trashed=false{parent_filter}",
         fields="files(id,name)",
@@ -83,6 +99,23 @@ def find_episode_file(drive_service, subject: str) -> str | None:
     if files:
         print(f"[gdrive] matched '{files[0]['name']}' for date {date}")
         return files[0]["id"]
+
+    # Fallback: list all folder mp3s and match on keywords from parentheses
+    keywords = _extract_keywords(subject)
+    if not keywords:
+        print(f"[gdrive] no Drive file found for date {date}")
+        return None
+    all_files = drive_service.files().list(
+        q=f"mimeType='audio/mpeg' and trashed=false{parent_filter}",
+        fields="files(id,name)",
+        pageSize=100,
+    ).execute().get("files", [])
+    for f in all_files:
+        name_lower = unicodedata.normalize("NFC", f["name"].lower())
+        if all(kw in name_lower for kw in keywords):
+            print(f"[gdrive] keyword-matched '{f['name']}' for subject '{subject}'")
+            return f["id"]
+
     print(f"[gdrive] no Drive file found for date {date}")
     return None
 

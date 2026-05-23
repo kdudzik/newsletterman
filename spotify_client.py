@@ -194,6 +194,10 @@ def list_articles_cached() -> list[dict]:
 def get_article_body(entry_id: str, drive_service=None) -> str:
     cached = _load_entry(entry_id)
 
+    # Consumed episodes don't need a transcript
+    if cached.get("status") == "consumed":
+        return ""
+
     # Return cached transcript if already fetched
     if cached.get("body"):
         return cached["body"]
