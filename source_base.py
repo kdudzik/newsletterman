@@ -1,5 +1,6 @@
 import json
 import re
+import unicodedata
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from email.utils import format_datetime, parsedate_to_datetime
@@ -57,7 +58,10 @@ def _strip_html(html: str) -> str:
     text = re.sub(r"&amp;", "&", text)
     text = re.sub(r"&lt;", "<", text)
     text = re.sub(r"&gt;", ">", text)
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    # Remove zero-width and invisible formatting characters left by email clients
+    text = "".join(c for c in text if unicodedata.category(c) not in ("Cf", "Cc") or c in "\n\t")
+    return text
 
 
 def _extract_text(html: str, url: str = "") -> str:

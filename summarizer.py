@@ -17,12 +17,14 @@ def _get_client() -> OpenAI:
     return _client
 
 
-_POLISH_CHARS = set("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ")
+_LANG_INSTRUCTIONS = {
+    "pl": "Write the summary in Polish.",
+    "de": "Write the summary in German.",
+    "es": "Write the summary in Spanish.",
+    "en": "Write the summary in English.",
+}
 
-
-def _is_polish(text: str) -> bool:
-    sample = text[:1000]
-    return sum(1 for c in sample if c in _POLISH_CHARS) >= 5
+_LANG_AUTO = "Write the summary in the same language as the source text."
 
 
 def _kind(is_article: bool = False, is_video: bool = False, is_podcast: bool = False) -> str:
@@ -35,12 +37,12 @@ def _kind(is_article: bool = False, is_video: bool = False, is_podcast: bool = F
     return "newsletter"
 
 
-def _lang_instruction(polish: bool) -> str:
-    return "Write the summary in Polish." if polish else "Write the summary in English."
+def _lang_instruction(lang: str) -> str:
+    return _LANG_INSTRUCTIONS.get(lang, _LANG_AUTO)
 
 
-def _system_prompt(kind: str, polish: bool, partial: bool = False) -> str:
-    lang_instruction = _lang_instruction(polish)
+def _system_prompt(kind: str, lang: str, partial: bool = False) -> str:
+    lang_instruction = _lang_instruction(lang)
     if partial:
         partial_instruction = (
             "Summarize only this fragment. Focus on concrete claims, events, and takeaways "
@@ -86,8 +88,8 @@ def _system_prompt(kind: str, polish: bool, partial: bool = False) -> str:
     )
 
 
-def _combine_prompt(kind: str, polish: bool) -> str:
-    lang_instruction = _lang_instruction(polish)
+def _combine_prompt(kind: str, lang: str) -> str:
+    lang_instruction = _lang_instruction(lang)
     link_instruction = (
         "Preserve relevant markdown links in the final bullets where they add value. "
         if kind == "newsletter" else
@@ -171,16 +173,16 @@ def _chunk_text(text: str, target_chars: int = _CHUNK_TARGET_CHARS, overlap_char
     return chunks
 
 
-def _single_pass_summary(text: str, subject: str, kind: str, polish: bool) -> str:
+def _single_pass_summary(text: str, subject: str, kind: str, lang: str) -> str:
     label = _content_label(kind)
-    system_prompt = _system_prompt(kind, polish, partial=False)
+    system_prompt = _system_prompt(kind, lang, partial=False)
     user_content = f"{label}: {subject}\n\n{text}"
     return _chat(system_prompt, user_content)
 
 
-def _partial_summary(chunk: str, subject: str, kind: str, polish: bool, index: int, total: int) -> str:
+def _partial_summary(chunk: str, subject: str, kind: str, lang: str, index: int, total: int) -> str:
     label = _content_label(kind)
-    system_prompt = _system_prompt(kind, polish, partial=True)
+    system_prompt = _system_prompt(kind, lang, partial=True)
     user_content = (
         f"{label}: {subject}\n"
         f"Fragment {index}/{total}\n\n"
@@ -189,7 +191,7 @@ def _partial_summary(chunk: str, subject: str, kind: str, polish: bool, index: i
     return _chat(system_prompt, user_content)
 
 
-def _combine_summaries(partials: list[str], subject: str, kind: str, polish: bool) -> str:
+def _combine_summaries(partials: list[str], subject: str, kind: str, lang: str) -> str:
     label = _content_label(kind)
     joined = "\n\n".join(
         f"[Fragment summary {idx}/{len(partials)}]\n{summary}"
@@ -200,14 +202,14 @@ def _combine_summaries(partials: list[str], subject: str, kind: str, polish: boo
         "Combine these fragment summaries into one final summary:\n\n"
         f"{joined}"
     )
-    return _chat(_combine_prompt(kind, polish), user_content)
+    return _chat(_combine_prompt(kind, lang), user_content)
 
 
 def _fact_check_summary(summary: str, subject: str) -> str:
     """Use a stronger model to catch proper-noun errors introduced by ASR or the summarizer."""
     client = _get_client()
     system = (
-        "You are a spelling corrector for a foreign-policy podcast summary written in Polish. "
+        "You are a spelling corrector for a foreign-policy podcast summary. "
         "The summary was generated from a speech-recognition transcript and may contain "
         "garbled proper nouns — misspelled names of people, organizations, acronyms, or places. "
         "Fix ONLY clear ASR transcription errors: wrong letters, missing diacritics, "
@@ -215,7 +217,7 @@ def _fact_check_summary(summary: str, subject: str) -> str:
         "or phonetically garbled foreign phrases (e.g. 'Cartel de los Soles' not 'Choles'). "
         "NEVER substitute one real person or entity for another, even if the surrounding "
         "sentence seems factually wrong to you — that is not your job. "
-        "Do not change facts, numbers, dates, or Polish grammar. "
+        "Do not change facts, numbers, dates, or grammar. "
         "Return only the corrected summary text, no preamble, no explanations."
     )
     response = client.chat.completions.create(
@@ -244,26 +246,26 @@ def summarize(
     language: str = "",
 ) -> str:
     kind = _kind(is_article=is_article, is_video=is_video, is_podcast=is_podcast)
-    polish = (language == "pl") if language else _is_polish(text + " " + subject)
+    lang = language if language in _LANG_INSTRUCTIONS else ""
     clean_text = text.strip()
     if len(clean_text) <= _SHORT_TEXT_CHARS:
-        summary = _single_pass_summary(clean_text, subject, kind, polish)
+        summary = _single_pass_summary(clean_text, subject, kind, lang)
     else:
         chunks = _chunk_text(clean_text)
         if len(chunks) == 1:
-            summary = _single_pass_summary(chunks[0], subject, kind, polish)
+            summary = _single_pass_summary(chunks[0], subject, kind, lang)
         else:
             partials = []
             for idx, chunk in enumerate(chunks, start=1):
-                partial = _partial_summary(chunk, subject, kind, polish, idx, len(chunks))
+                partial = _partial_summary(chunk, subject, kind, lang, idx, len(chunks))
                 if partial:
                     partials.append(partial)
             if not partials:
-                summary = _single_pass_summary(clean_text[:_SHORT_TEXT_CHARS], subject, kind, polish)
+                summary = _single_pass_summary(clean_text[:_SHORT_TEXT_CHARS], subject, kind, lang)
             elif len(partials) == 1:
                 summary = partials[0]
             else:
-                summary = _combine_summaries(partials, subject, kind, polish)
+                summary = _combine_summaries(partials, subject, kind, lang)
 
     if kind == "podcast" and summary:
         summary = _fact_check_summary(summary, subject)
