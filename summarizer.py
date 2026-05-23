@@ -203,6 +203,38 @@ def _combine_summaries(partials: list[str], subject: str, kind: str, polish: boo
     return _chat(_combine_prompt(kind, polish), user_content)
 
 
+def _fact_check_summary(summary: str, subject: str) -> str:
+    """Use a stronger model to catch proper-noun errors introduced by ASR or the summarizer."""
+    client = _get_client()
+    system = (
+        "You are a spelling corrector for a foreign-policy podcast summary written in Polish. "
+        "The summary was generated from a speech-recognition transcript and may contain "
+        "garbled proper nouns — misspelled names of people, organizations, acronyms, or places. "
+        "Fix ONLY clear ASR transcription errors: wrong letters, missing diacritics, "
+        "garbled acronym capitalisation (e.g. CONAIE not Conaie, RAE not RAJ), "
+        "or phonetically garbled foreign phrases (e.g. 'Cartel de los Soles' not 'Choles'). "
+        "NEVER substitute one real person or entity for another, even if the surrounding "
+        "sentence seems factually wrong to you — that is not your job. "
+        "Do not change facts, numbers, dates, or Polish grammar. "
+        "Return only the corrected summary text, no preamble, no explanations."
+    )
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        max_tokens=_MAX_OUTPUT_TOKENS,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Episode: {subject}\n\nSummary:\n{summary}"},
+        ],
+    )
+    result = (response.choices[0].message.content or "").strip()
+    # Strip any "Episode:/Summary:" header the model may have echoed back
+    if result.startswith("Episode:"):
+        result = result.split("\n\n", 1)[-1] if "\n\n" in result else result
+    if result.lower().startswith("summary:"):
+        result = result[result.index(":") + 1:].lstrip()
+    return result.strip() or summary
+
+
 def summarize(
     text: str,
     subject: str,
@@ -215,20 +247,24 @@ def summarize(
     polish = (language == "pl") if language else _is_polish(text + " " + subject)
     clean_text = text.strip()
     if len(clean_text) <= _SHORT_TEXT_CHARS:
-        return _single_pass_summary(clean_text, subject, kind, polish)
+        summary = _single_pass_summary(clean_text, subject, kind, polish)
+    else:
+        chunks = _chunk_text(clean_text)
+        if len(chunks) == 1:
+            summary = _single_pass_summary(chunks[0], subject, kind, polish)
+        else:
+            partials = []
+            for idx, chunk in enumerate(chunks, start=1):
+                partial = _partial_summary(chunk, subject, kind, polish, idx, len(chunks))
+                if partial:
+                    partials.append(partial)
+            if not partials:
+                summary = _single_pass_summary(clean_text[:_SHORT_TEXT_CHARS], subject, kind, polish)
+            elif len(partials) == 1:
+                summary = partials[0]
+            else:
+                summary = _combine_summaries(partials, subject, kind, polish)
 
-    chunks = _chunk_text(clean_text)
-    if len(chunks) == 1:
-        return _single_pass_summary(chunks[0], subject, kind, polish)
-
-    partials = []
-    for idx, chunk in enumerate(chunks, start=1):
-        partial = _partial_summary(chunk, subject, kind, polish, idx, len(chunks))
-        if partial:
-            partials.append(partial)
-
-    if not partials:
-        return _single_pass_summary(clean_text[:_SHORT_TEXT_CHARS], subject, kind, polish)
-    if len(partials) == 1:
-        return partials[0]
-    return _combine_summaries(partials, subject, kind, polish)
+    if kind == "podcast" and summary:
+        summary = _fact_check_summary(summary, subject)
+    return summary

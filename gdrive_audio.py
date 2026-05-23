@@ -145,7 +145,7 @@ def _clear_chunk_cache(file_id: str) -> None:
         pass
 
 
-def transcribe_episode(drive_service, file_id: str, subject: str = "") -> str:
+def transcribe_episode(drive_service, file_id: str, subject: str = "", description: str = "") -> str:
     """Download mp3 from Drive, split into chunks, transcribe via Groq (fallback: OpenAI)."""
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
         tmp_path = tmp.name
@@ -156,22 +156,31 @@ def transcribe_episode(drive_service, file_id: str, subject: str = "") -> str:
             _, done = downloader.next_chunk()
     print(f"[gdrive] downloaded {os.path.getsize(tmp_path) // (1024*1024)} MB")
     try:
-        return _transcribe_chunked(tmp_path, file_id=file_id, subject=subject)
+        return _transcribe_chunked(tmp_path, file_id=file_id, subject=subject, description=description)
     finally:
         os.unlink(tmp_path)
 
 
-def _build_whisper_prompt(subject: str) -> str:
-    return f"Podcast o polityce zagranicznej. Odcinek: {subject}" if subject else "Podcast o polityce zagranicznej."
+def _build_whisper_prompt(subject: str, description: str = "") -> str:
+    base = f"Podcast o polityce zagranicznej. Odcinek: {subject}." if subject else "Podcast o polityce zagranicznej."
+    # Whisper uses the prompt to bias its vocabulary — the episode description
+    # from Spotify already contains correctly spelled proper nouns (names, orgs,
+    # acronyms, places) that appear in the episode, so appending it gives Whisper
+    # the right priors without any manual curation.
+    if description:
+        # Trim to ~500 chars so the combined prompt stays well under Whisper's ~224-token limit
+        snippet = description[:500].strip()
+        return f"{base} {snippet}"
+    return base
 
 
-def _transcribe_chunked(mp3_path: str, file_id: str = "", subject: str = "") -> str:
+def _transcribe_chunked(mp3_path: str, file_id: str = "", subject: str = "", description: str = "") -> str:
     _configure_audio_tools()
     audio = AudioSegment.from_mp3(mp3_path)
     duration_min = len(audio) // 60000
     chunks = [audio[i:i + CHUNK_MS] for i in range(0, len(audio), CHUNK_MS)]
     print(f"[gdrive] transcribing {duration_min}min audio in {len(chunks)} chunk(s)")
-    prompt = _build_whisper_prompt(subject)
+    prompt = _build_whisper_prompt(subject, description=description)
     cache = _load_chunk_cache(file_id) if file_id else {}
     if cache:
         print(f"[gdrive] resuming from chunk cache: {len(cache)}/{len(chunks)} already done")
