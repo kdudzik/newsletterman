@@ -17,10 +17,7 @@ from source_base import (
 
 def _is_transcribable_show(show_name: str) -> bool:
     """Return True for shows whose audio is fetched from Drive rather than Spotify description."""
-    try:
-        from config import SPOTIFY_DRIVE_TRANSCRIBE_SHOWS
-    except ImportError:
-        SPOTIFY_DRIVE_TRANSCRIBE_SHOWS = ["podsumowanie"]
+    from config import SPOTIFY_DRIVE_TRANSCRIBE_SHOWS
     name = (show_name or "").lower()
     return any(keyword in name for keyword in SPOTIFY_DRIVE_TRANSCRIBE_SHOWS)
 
@@ -219,6 +216,7 @@ def get_article_body(entry_id: str, drive_service=None) -> str:
         from gdrive_audio import TranscriptDeferredError, find_episode_file, transcribe_episode
         file_id = find_episode_file(drive_service, cached.get("subject", ""))
         if file_id:
+            cached["gdrive_file_id"] = file_id
             cached["transcription_status"] = "running"
             cached.pop("transcription_error", None)
             _save_entry(entry_id, cached)
@@ -313,7 +311,7 @@ class SpotifySource(Source):
         try:
             from google_auth import build_google_service
             self._drive_service = build_google_service(
-                "drive", "v3", "https://www.googleapis.com/auth/drive.readonly"
+                "drive", "v3", "https://www.googleapis.com/auth/drive"
             )
         except Exception as e:
             self.last_error = f"Drive not available for transcripts: {e}"
@@ -334,13 +332,45 @@ class SpotifySource(Source):
             self.clear_error()
         return body
 
+    def _drive_file_id(self, entry_id: str, cached: dict, drive_service) -> str | None:
+        file_id = cached.get("gdrive_file_id")
+        if not file_id:
+            from gdrive_audio import find_episode_file
+            file_id = find_episode_file(drive_service, cached.get("subject", ""))
+            if file_id:
+                cached["gdrive_file_id"] = file_id
+                _save_entry(entry_id, cached)
+        return file_id
+
     def mark_consumed(self, entry_id: str) -> bool:
+        cached = _load_entry(entry_id)
+        if cached and _is_transcribable_show(cached.get("from")):
+            drive_service = self._ensure_drive_service()
+            if drive_service:
+                try:
+                    from gdrive_audio import move_to_archive
+                    file_id = self._drive_file_id(entry_id, cached, drive_service)
+                    if file_id:
+                        move_to_archive(drive_service, file_id)
+                except Exception as e:
+                    print(f"[gdrive] move_to_archive failed for {entry_id}: {e}")
         return remove_from_saved(entry_id)
 
     def _external_consume(self, entry_id: str) -> None:
         remove_from_saved(entry_id)
 
     def mark_restored(self, entry_id: str) -> bool:
+        cached = _load_entry(entry_id)
+        if cached and _is_transcribable_show(cached.get("from")):
+            drive_service = self._ensure_drive_service()
+            if drive_service:
+                try:
+                    from gdrive_audio import restore_from_archive
+                    file_id = self._drive_file_id(entry_id, cached, drive_service)
+                    if file_id:
+                        restore_from_archive(drive_service, file_id)
+                except Exception as e:
+                    print(f"[gdrive] restore_from_archive failed for {entry_id}: {e}")
         return mark_unread(entry_id)
 
     def list_cached(self) -> list[dict]:

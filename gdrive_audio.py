@@ -10,7 +10,9 @@ from googleapiclient.http import MediaIoBaseDownload
 from pydub import AudioSegment
 from provider_state import clear_provider_retry, infer_retry_at, is_rate_limit_error, set_provider_retry
 
-_FOLDER_NAME = "3R Podsumowania tygodnia"
+from config import GDRIVE_PODCAST_FOLDER, GDRIVE_ARCHIVE_FOLDER
+
+_FOLDER_NAME = GDRIVE_PODCAST_FOLDER
 _FOLDER_IDS: list[str] = []
 
 CHUNK_MS = 20 * 60 * 1000  # 20-minute chunks stay well under 25 MB
@@ -118,6 +120,61 @@ def find_episode_file(drive_service, subject: str) -> str | None:
 
     print(f"[gdrive] no Drive file found for date {date}")
     return None
+
+
+def _resolve_archive_folder_id(drive_service, parent_id: str) -> str:
+    """Find or create the archive subfolder, returning its ID."""
+    res = drive_service.files().list(
+        q=f"name='{GDRIVE_ARCHIVE_FOLDER}' and mimeType='application/vnd.google-apps.folder' and '{parent_id}' in parents and trashed=false",
+        fields="files(id)",
+        pageSize=1,
+    ).execute()
+    hits = res.get("files", [])
+    if hits:
+        return hits[0]["id"]
+    folder = drive_service.files().create(
+        body={"name": GDRIVE_ARCHIVE_FOLDER, "mimeType": "application/vnd.google-apps.folder", "parents": [parent_id]},
+        fields="id",
+    ).execute()
+    archive_id = folder["id"]
+    print(f"[gdrive] created '{GDRIVE_ARCHIVE_FOLDER}' folder {archive_id}")
+    return archive_id
+
+
+def move_to_archive(drive_service, file_id: str) -> bool:
+    """Move a Drive mp3 into the archive subfolder of the podcast folder."""
+    folder_ids = _resolve_folder_ids(drive_service)
+    if not folder_ids:
+        print(f"[gdrive] cannot move to archive: '{GDRIVE_PODCAST_FOLDER}' not resolved")
+        return False
+    parent_id = folder_ids[0]
+    archive_id = _resolve_archive_folder_id(drive_service, parent_id)
+    drive_service.files().update(
+        fileId=file_id,
+        addParents=archive_id,
+        removeParents=parent_id,
+        fields="id,parents",
+    ).execute()
+    print(f"[gdrive] moved {file_id} to '{GDRIVE_ARCHIVE_FOLDER}'")
+    return True
+
+
+def restore_from_archive(drive_service, file_id: str) -> bool:
+    """Move a Drive mp3 back from the archive subfolder to the podcast folder."""
+    folder_ids = _resolve_folder_ids(drive_service)
+    if not folder_ids:
+        print(f"[gdrive] cannot restore from archive: '{GDRIVE_PODCAST_FOLDER}' not resolved")
+        return False
+    parent_id = folder_ids[0]
+    archive_id = _resolve_archive_folder_id(drive_service, parent_id)
+    drive_service.files().update(
+        fileId=file_id,
+        addParents=parent_id,
+        removeParents=archive_id,
+        fields="id,parents",
+    ).execute()
+    print(f"[gdrive] restored {file_id} from '{GDRIVE_ARCHIVE_FOLDER}'")
+    return True
 
 
 def _chunk_cache_path(file_id: str) -> str:
