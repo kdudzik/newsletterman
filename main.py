@@ -209,7 +209,8 @@ def _all_cache_files():
     if not cache_dir.exists():
         return
     for f in sorted(cache_dir.glob("*.json")):
-        yield f, f.stem
+        if not f.stem.startswith("_"):
+            yield f, f.stem
 
 
 def _ensure_summaries_sync() -> None:
@@ -299,14 +300,24 @@ def _ensure_scores_sync() -> None:
 
 
 def _sync_all_sources(label: str = "") -> list[int]:
+    import time
+    force = bool(label)
+    now = time.monotonic()
     counts = []
     for source in registry.values():
+        if not force and (now - source._last_synced_at) < source.sync_interval_seconds:
+            continue
         _before = _cached_ids()
         try:
             items = source.sync()
+            source._last_synced_at = time.monotonic()
             _log_new_entries(items, _before)
             source.clear_error()
             counts.append(len(items))
+            try:
+                source.drain_pending_ops()
+            except Exception as drain_e:
+                _log(f"[{source.prefix}] drain_pending_ops error: {drain_e}")
         except Exception as e:
             source.set_error(str(e))
             suffix = f" {label}" if label else ""
@@ -326,7 +337,7 @@ def _bg_sync_loop() -> None:
 
 def _startup_warmup_sync() -> None:
     try:
-        _sync_all_sources("startup")
+        _sync_all_sources()
     except Exception as e:
         _log(f"[startup] sync failed: {e}")
     _ensure_summaries_sync()

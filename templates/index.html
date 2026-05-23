@@ -130,7 +130,7 @@
         {% set _value_pct = '' %}
       {% endif %}
       {% set _status = n.get('status', 'inbox') %}
-      <li class="item" data-id="{{ n.id }}" data-sender="{{ n.from | sender_name }}" data-ts="{{ n.date | date_ts }}" data-status="{{ _status }}" data-mins="{{ _mins }}" data-relevance="{{ _rs if _rs is not none else '' }}" data-challenge="{{ _cs if _cs is not none else '' }}" data-lean="{{ n.lean if 'lean' in n else '' }}" data-trust="{{ _ts if _ts is not none else '' }}" data-value="{{ _value_pct }}" data-source="{{ n.source if 'source' in n else 'gmail' }}" data-pending="{{ 'true' if (not n.summary or (not _has_scores and not _title_only)) else 'false' }}">
+      <li class="item" data-id="{{ n.id }}" data-sender="{{ n.from | sender_name }}" data-ts="{{ n.date | date_ts }}" data-status="{{ _status }}" data-mins="{{ _mins }}" data-relevance="{{ _rs if _rs is not none else '' }}" data-challenge="{{ _cs if _cs is not none else '' }}" data-lean="{{ n.lean if 'lean' in n else '' }}" data-trust="{{ _ts if _ts is not none else '' }}" data-value="{{ _value_pct }}" data-source="{{ n.source if 'source' in n else 'gmail' }}" data-pending="{{ 'true' if (_status not in ('consumed', 'skipped') and (not n.summary or (not _has_scores and not _title_only))) else 'false' }}">
         <div class="card{{ ' card--has-thumbnail' if n.get('thumbnail') else '' }}">
           <div class="card-link">
             <div class="card-header">
@@ -434,7 +434,9 @@
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
         if (!await postAction(consumeUrl(id), btn)) return;
-        btn.closest('.item').dataset.status = 'consumed';
+        const consumedItem = btn.closest('.item');
+        consumedItem.dataset.status = 'consumed';
+        consumedItem.dataset.pending = 'false';
         applyView();
       });
     });
@@ -443,7 +445,9 @@
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
         if (!await postAction(skipUrl(id), btn)) return;
-        btn.closest('.item').dataset.status = 'skipped';
+        const skippedItem = btn.closest('.item');
+        skippedItem.dataset.status = 'skipped';
+        skippedItem.dataset.pending = 'false';
         applyView();
       });
     });

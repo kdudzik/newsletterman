@@ -94,7 +94,7 @@ def _clear_active_transcription(entry_id: str) -> None:
         _TRANSCRIPTION_ACTIVE_PATH.unlink(missing_ok=True)
 
 
-def _client() -> spotipy.Spotify:
+def _client(retries: int = 3) -> spotipy.Spotify:
     cache_path = str(_SPOTIFY_CACHE) if _SPOTIFY_CACHE.exists() else None
     return spotipy.Spotify(auth_manager=SpotifyOAuth(
         client_id=os.getenv("SPOTIPY_CLIENT_ID"),
@@ -103,11 +103,11 @@ def _client() -> spotipy.Spotify:
         scope=_SCOPE,
         cache_path=cache_path,
         open_browser=False,
-    ))
+    ), retries=retries)
 
 
 def sync_articles(_service=None) -> list[dict]:
-    sp = _client()
+    sp = _client(retries=0)
     results = sp.current_user_saved_episodes(limit=50)
     entries = []
     seen_ids = set()
@@ -161,7 +161,7 @@ def sync_articles(_service=None) -> list[dict]:
             cached.pop("read", None)  # episode is in saved list → treat as unread
             _save_entry(entry_id, cached)
             entries.append(entry)
-        results = _client().next(results) if results.get("next") else None
+        results = _client(retries=0).next(results) if results.get("next") else None
     return entries
 
 
@@ -262,19 +262,31 @@ def get_article_body(entry_id: str, drive_service=None) -> str:
     return description
 
 
+def _spotify_remote_delete(entry_id: str) -> None:
+    cached = _load_entry(entry_id)
+    episode_id = cached.get("episode_id", entry_id.removeprefix("spotify-"))
+    _client(retries=0).current_user_saved_episodes_delete([episode_id])
+
+
+def _spotify_remote_add(entry_id: str) -> None:
+    cached = _load_entry(entry_id)
+    episode_id = cached.get("episode_id", entry_id.removeprefix("spotify-"))
+    _client(retries=0).current_user_saved_episodes_add([episode_id])
+
+
 def remove_from_saved(entry_id: str) -> bool:
     cached = _load_entry(entry_id)
     if not cached:
         return False
-    episode_id = cached.get("episode_id", entry_id.removeprefix("spotify-"))
-    try:
-        sp = _client()
-        sp.current_user_saved_episodes_delete([episode_id])
-    except Exception as e:
-        print(f"[spotify] remove saved episode failed for {episode_id}: {e}")
     cached.pop("read", None)
     cached["status"] = "consumed"
     _save_entry(entry_id, cached)
+    try:
+        _spotify_remote_delete(entry_id)
+    except Exception as e:
+        from source_base import enqueue_remote_op
+        enqueue_remote_op("spotify", "consume", entry_id)
+        print(f"[spotify] remove saved episode queued for retry: {e}")
     return True
 
 
@@ -282,15 +294,15 @@ def mark_unread(entry_id: str) -> bool:
     cached = _load_entry(entry_id)
     if not cached:
         return False
-    episode_id = cached.get("episode_id", entry_id.removeprefix("spotify-"))
-    try:
-        sp = _client()
-        sp.current_user_saved_episodes_add([episode_id])
-    except Exception as e:
-        print(f"[spotify] re-save episode failed for {episode_id}: {e}")
     cached.pop("read", None)
     cached.pop("status", None)
     _save_entry(entry_id, cached)
+    try:
+        _spotify_remote_add(entry_id)
+    except Exception as e:
+        from source_base import enqueue_remote_op
+        enqueue_remote_op("spotify", "restore", entry_id)
+        print(f"[spotify] re-save episode queued for retry: {e}")
     return True
 
 
@@ -301,6 +313,7 @@ class SpotifySource(Source):
     prefix = "spotify"
     is_podcast = True
     throttle_after_body = True
+    sync_interval_seconds = 600
 
     def __init__(self, drive_service=None):
         self._drive_service = drive_service
@@ -342,6 +355,12 @@ class SpotifySource(Source):
                 _save_entry(entry_id, cached)
         return file_id
 
+    def _remote_consume(self, entry_id: str) -> None:
+        _spotify_remote_delete(entry_id)
+
+    def _remote_restore(self, entry_id: str) -> None:
+        _spotify_remote_add(entry_id)
+
     def mark_consumed(self, entry_id: str) -> bool:
         cached = _load_entry(entry_id)
         if cached and _is_transcribable_show(cached.get("from")):
@@ -355,9 +374,6 @@ class SpotifySource(Source):
                 except Exception as e:
                     print(f"[gdrive] move_to_archive failed for {entry_id}: {e}")
         return remove_from_saved(entry_id)
-
-    def _external_consume(self, entry_id: str) -> None:
-        remove_from_saved(entry_id)
 
     def mark_restored(self, entry_id: str) -> bool:
         cached = _load_entry(entry_id)

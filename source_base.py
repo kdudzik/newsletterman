@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from email.utils import format_datetime, parsedate_to_datetime
 from pathlib import Path
 
+_PENDING_OPS_PATH_NAME = "_pending_remote_ops.json"
+
 import trafilatura
 
 _CACHE_DIR = Path(__file__).parent / ".cache"
@@ -71,6 +73,41 @@ def _extract_text(html: str, url: str = "") -> str:
     return _strip_html(html)
 
 
+def _pending_ops_path() -> Path:
+    return _CACHE_DIR / _PENDING_OPS_PATH_NAME
+
+
+def _load_pending_ops() -> list[dict]:
+    p = _pending_ops_path()
+    if not p.exists():
+        return []
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return []
+
+
+def _save_pending_ops(ops: list[dict]) -> None:
+    _CACHE_DIR.mkdir(exist_ok=True)
+    _pending_ops_path().write_text(json.dumps(ops, indent=2))
+
+
+def enqueue_remote_op(prefix: str, action: str, entry_id: str) -> None:
+    ops = _load_pending_ops()
+    ops = [o for o in ops if not (o["prefix"] == prefix and o["action"] == action and o["entry_id"] == entry_id)]
+    ops.append({"prefix": prefix, "action": action, "entry_id": entry_id,
+                "queued_at": datetime.now(timezone.utc).isoformat()})
+    _save_pending_ops(ops)
+
+
+def _pop_pending_ops(prefix: str) -> list[dict]:
+    ops = _load_pending_ops()
+    mine = [o for o in ops if o["prefix"] == prefix]
+    rest = [o for o in ops if o["prefix"] != prefix]
+    _save_pending_ops(rest)
+    return mine
+
+
 def _sync_status_flags(prefix: str, current_ids: set) -> None:
     """Sync entry status based on whether they appear in current_ids.
 
@@ -107,7 +144,9 @@ class Source(ABC):
     is_podcast: bool = False
     is_article: bool = False
     throttle_after_body: bool = False
+    sync_interval_seconds: int = 120
     last_error: str = ""
+    _last_synced_at: float = 0.0
 
     @abstractmethod
     def sync(self) -> list[dict]: ...
@@ -118,8 +157,31 @@ class Source(ABC):
     @abstractmethod
     def mark_consumed(self, entry_id: str) -> bool: ...
 
+    def _remote_consume(self, entry_id: str) -> None:
+        """Perform only the remote API removal. Raise on failure."""
+
+    def _remote_restore(self, entry_id: str) -> None:
+        """Perform only the remote API restore. Raise on failure."""
+
     def _external_consume(self, entry_id: str) -> None:
         """Trigger the external API action that removes the entry from the source (e.g. remove label, archive). Called by mark_skipped only when the entry is not already done."""
+        try:
+            self._remote_consume(entry_id)
+        except Exception as e:
+            enqueue_remote_op(self.prefix, "consume", entry_id)
+            print(f"[{self.prefix}] external_consume queued for retry: {e}")
+
+    def drain_pending_ops(self) -> None:
+        for op in _pop_pending_ops(self.prefix):
+            try:
+                if op["action"] == "consume":
+                    self._remote_consume(op["entry_id"])
+                elif op["action"] == "restore":
+                    self._remote_restore(op["entry_id"])
+                print(f"[{self.prefix}] retried {op['action']} ok: {op['entry_id']}")
+            except Exception as e:
+                enqueue_remote_op(self.prefix, op["action"], op["entry_id"])
+                print(f"[{self.prefix}] retry {op['action']} still failing for {op['entry_id']}: {e}")
 
     def mark_skipped(self, entry_id: str) -> bool:
         cached = self.load_entry(entry_id)

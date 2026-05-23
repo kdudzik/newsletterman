@@ -381,77 +381,84 @@ def _fetch_transcript(video_id: str) -> tuple[str, str]:
         return "", ""
 
 
+def _youtube_remote_remove(article_id: str) -> None:
+    cached = _load_entry(article_id)
+    video_id = cached.get("video_id", article_id.removeprefix("youtube-"))
+    set_video_id = cached.get("set_video_id", "")
+    session = _session()
+    if set_video_id:
+        actions = [{"action": "ACTION_REMOVE_VIDEO", "setVideoId": set_video_id}]
+    else:
+        actions = [{"action": "ACTION_REMOVE_VIDEO_BY_VIDEO_ID", "removedVideoId": video_id}]
+    resp = session.post(
+        "https://www.youtube.com/youtubei/v1/browse/edit_playlist",
+        params={"key": _INNERTUBE_KEY},
+        json={
+            "context": {"client": _INNERTUBE_CLIENT},
+            "playlistId": "WL",
+            "actions": actions,
+        },
+        headers={
+            "Content-Type": "application/json",
+            "X-YouTube-Client-Name": "1",
+            "X-YouTube-Client-Version": _INNERTUBE_CLIENT["clientVersion"],
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+
+
 def remove_from_watch_later(article_id: str, _cookie_file: str = "") -> bool:
-    """Remove video from Watch Later playlist via Innertube, then mark locally as read."""
     cached = _load_entry(article_id)
     if not cached:
         return False
-
-    video_id = cached.get("video_id", article_id.removeprefix("youtube-"))
-    set_video_id = cached.get("set_video_id", "")
-
-    try:
-        session = _session()
-        if set_video_id:
-            actions = [{"action": "ACTION_REMOVE_VIDEO", "setVideoId": set_video_id}]
-        else:
-            actions = [{"action": "ACTION_REMOVE_VIDEO_BY_VIDEO_ID", "removedVideoId": video_id}]
-        resp = session.post(
-            "https://www.youtube.com/youtubei/v1/browse/edit_playlist",
-            params={"key": _INNERTUBE_KEY},
-            json={
-                "context": {"client": _INNERTUBE_CLIENT},
-                "playlistId": "WL",
-                "actions": actions,
-            },
-            headers={
-                "Content-Type": "application/json",
-                "X-YouTube-Client-Name": "1",
-                "X-YouTube-Client-Version": _INNERTUBE_CLIENT["clientVersion"],
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-    except Exception as e:
-        print(f"[youtube] WL removal failed for {video_id}: {type(e).__name__}: {e}")
-
     cached.pop("read", None)
     cached["status"] = "consumed"
     _save_entry(article_id, cached)
+    try:
+        _youtube_remote_remove(article_id)
+    except Exception as e:
+        from source_base import enqueue_remote_op
+        enqueue_remote_op("youtube", "consume", article_id)
+        print(f"[youtube] WL removal queued for retry: {type(e).__name__}: {e}")
     return True
+
+
+def _youtube_remote_add(article_id: str) -> None:
+    cached = _load_entry(article_id)
+    video_id = cached.get("video_id", article_id.removeprefix("youtube-"))
+    session = _session()
+    resp = session.post(
+        "https://www.youtube.com/youtubei/v1/browse/edit_playlist",
+        params={"key": _INNERTUBE_KEY},
+        json={
+            "context": {"client": _INNERTUBE_CLIENT},
+            "playlistId": "WL",
+            "actions": [{"action": "ACTION_ADD_VIDEO", "addedVideoId": video_id}],
+        },
+        headers={
+            "Content-Type": "application/json",
+            "X-YouTube-Client-Name": "1",
+            "X-YouTube-Client-Version": _INNERTUBE_CLIENT["clientVersion"],
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
 
 
 def mark_unread(article_id: str) -> bool:
     cached = _load_entry(article_id)
     if not cached:
         return False
-
-    video_id = cached.get("video_id", article_id.removeprefix("youtube-"))
-
-    try:
-        session = _session()
-        resp = session.post(
-            "https://www.youtube.com/youtubei/v1/browse/edit_playlist",
-            params={"key": _INNERTUBE_KEY},
-            json={
-                "context": {"client": _INNERTUBE_CLIENT},
-                "playlistId": "WL",
-                "actions": [{"action": "ACTION_ADD_VIDEO", "addedVideoId": video_id}],
-            },
-            headers={
-                "Content-Type": "application/json",
-                "X-YouTube-Client-Name": "1",
-                "X-YouTube-Client-Version": _INNERTUBE_CLIENT["clientVersion"],
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-    except Exception as e:
-        print(f"[youtube] WL re-add failed for {video_id}: {type(e).__name__}: {e}")
-
     cached.pop("read", None)
     cached.pop("status", None)
     _save_entry(article_id, cached)
+    try:
+        _youtube_remote_add(article_id)
+    except Exception as e:
+        from source_base import enqueue_remote_op
+        enqueue_remote_op("youtube", "restore", article_id)
+        print(f"[youtube] WL re-add queued for retry: {type(e).__name__}: {e}")
     return True
 
 
@@ -462,6 +469,7 @@ class YouTubeSource(Source):
     prefix = "youtube"
     is_video = True
     throttle_after_body = True
+    sync_interval_seconds = 600
 
     def sync(self) -> list[dict]:
         return sync_articles()
@@ -469,11 +477,14 @@ class YouTubeSource(Source):
     def get_body(self, entry_id: str) -> str:
         return get_article_body(entry_id)
 
+    def _remote_consume(self, entry_id: str) -> None:
+        _youtube_remote_remove(entry_id)
+
+    def _remote_restore(self, entry_id: str) -> None:
+        _youtube_remote_add(entry_id)
+
     def mark_consumed(self, entry_id: str) -> bool:
         return remove_from_watch_later(entry_id)
-
-    def _external_consume(self, entry_id: str) -> None:
-        remove_from_watch_later(entry_id)
 
     def mark_restored(self, entry_id: str) -> bool:
         return mark_unread(entry_id)

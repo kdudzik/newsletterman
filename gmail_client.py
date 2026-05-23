@@ -211,35 +211,53 @@ def _extract_text(payload: dict) -> str:
     return ""
 
 
-def restore_read_later_label(message_id: str, service) -> bool:
+def _gmail_remote_restore(message_id: str, service) -> None:
     label_id = _find_label_id(service, READ_LATER_LABEL)
     if not label_id:
-        return False
+        raise RuntimeError(f"label '{READ_LATER_LABEL}' not found")
     service.users().messages().modify(
         userId="me",
         id=message_id[len("gmail-"):],
         body={"addLabelIds": [label_id, "UNREAD"]},
     ).execute()
-    cached = _load_entry(message_id)
-    cached.pop("read", None)
-    cached.pop("status", None)
-    _save_entry(message_id, cached)
-    return True
 
 
-def remove_read_later_label(message_id: str, service) -> bool:
+def _gmail_remote_consume(message_id: str, service) -> None:
     label_id = _find_label_id(service, READ_LATER_LABEL)
     if not label_id:
-        return False
+        raise RuntimeError(f"label '{READ_LATER_LABEL}' not found")
     service.users().messages().modify(
         userId="me",
         id=message_id[len("gmail-"):],
         body={"removeLabelIds": [label_id, "UNREAD"]},
     ).execute()
+
+
+def restore_read_later_label(message_id: str, service) -> bool:
+    cached = _load_entry(message_id)
+    cached.pop("read", None)
+    cached.pop("status", None)
+    _save_entry(message_id, cached)
+    try:
+        _gmail_remote_restore(message_id, service)
+    except Exception as e:
+        from source_base import enqueue_remote_op
+        enqueue_remote_op("gmail", "restore", message_id)
+        print(f"[gmail] restore label queued for retry: {e}")
+    return True
+
+
+def remove_read_later_label(message_id: str, service) -> bool:
     cached = _load_entry(message_id)
     cached.pop("read", None)
     cached["status"] = "consumed"
     _save_entry(message_id, cached)
+    try:
+        _gmail_remote_consume(message_id, service)
+    except Exception as e:
+        from source_base import enqueue_remote_op
+        enqueue_remote_op("gmail", "consume", message_id)
+        print(f"[gmail] remove label queued for retry: {e}")
     return True
 
 
@@ -250,6 +268,7 @@ from source_base import Source
 
 class GmailSource(Source):
     prefix = "gmail"
+    sync_interval_seconds = 120
 
     def __init__(self, service=None):
         self._service = service
@@ -266,15 +285,16 @@ class GmailSource(Source):
         service = get_service()  # fresh per call — httplib2 is not thread-safe
         return get_newsletter_body(entry_id, service).get("body", "")
 
+    def _remote_consume(self, entry_id: str) -> None:
+        _gmail_remote_consume(entry_id, self._service_for_actions())
+
+    def _remote_restore(self, entry_id: str) -> None:
+        _gmail_remote_restore(entry_id, self._service_for_actions())
+
     def mark_consumed(self, entry_id: str) -> bool:
         service = self._service_for_actions()
         self._service = service
         return remove_read_later_label(entry_id, service)
-
-    def _external_consume(self, entry_id: str) -> None:
-        service = self._service_for_actions()
-        self._service = service
-        remove_read_later_label(entry_id, service)
 
     def mark_restored(self, entry_id: str) -> bool:
         service = self._service_for_actions()

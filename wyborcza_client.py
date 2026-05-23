@@ -217,46 +217,48 @@ def mark_restored_local(article_id: str) -> bool:
     return True
 
 
+def _wyborcza_remote_delete(article_id: str, schowek_url: str) -> None:
+    cached = _load_entry(article_id)
+    page_id = _resolve_page_id(cached)
+    url = cached.get("url", "")
+    if not page_id or not url or not schowek_url:
+        return
+    session = _session()
+    session.delete(
+        f"{_page_api_base(schowek_url)}/{page_id}",
+        headers={"Accept": "*/*", "Referer": url, "X-Requested-With": "XMLHttpRequest"},
+        timeout=20,
+    ).raise_for_status()
+
+
 def remove_from_schowek(article_id: str, schowek_url: str, _cookie_file: str = "") -> bool:
     cached = _load_entry(article_id)
     if not cached:
         return False
-
     page_id = _resolve_page_id(cached)
     url = cached.get("url", "")
     if not page_id or not url or not schowek_url:
         return False
-
-    session = _session()
-    resp = session.delete(
-        f"{_page_api_base(schowek_url)}/{page_id}",
-        headers={
-            "Accept": "*/*",
-            "Referer": url,
-            "X-Requested-With": "XMLHttpRequest",
-        },
-        timeout=20,
-    )
-    resp.raise_for_status()
-
     cached.pop("read", None)
     cached["status"] = "consumed"
     _save_entry(article_id, cached)
+    try:
+        _wyborcza_remote_delete(article_id, schowek_url)
+    except Exception as e:
+        from source_base import enqueue_remote_op
+        enqueue_remote_op("wyborcza", "consume", article_id)
+        print(f"[wyborcza] remove_from_schowek queued for retry: {e}")
     return True
 
 
-def add_to_schowek(article_id: str, schowek_url: str, _cookie_file: str = "") -> bool:
+def _wyborcza_remote_add(article_id: str, schowek_url: str) -> None:
     cached = _load_entry(article_id)
-    if not cached:
-        return False
-
     page_id = _resolve_page_id(cached)
     url = cached.get("url", "")
     if not page_id or not url or not schowek_url:
-        return False
-
+        return
     session = _session()
-    resp = session.put(
+    session.put(
         f"{_page_api_base(schowek_url)}/",
         headers={
             "Accept": "*/*",
@@ -266,13 +268,27 @@ def add_to_schowek(article_id: str, schowek_url: str, _cookie_file: str = "") ->
         },
         json=[{"pageId": page_id, "pageUrl": url}],
         timeout=20,
-    )
-    resp.raise_for_status()
+    ).raise_for_status()
 
+
+def add_to_schowek(article_id: str, schowek_url: str, _cookie_file: str = "") -> bool:
+    cached = _load_entry(article_id)
+    if not cached:
+        return False
+    page_id = _resolve_page_id(cached)
+    url = cached.get("url", "")
+    if not page_id or not url or not schowek_url:
+        return False
     cached["page_id"] = page_id
     cached.pop("read", None)
     cached.pop("status", None)
     _save_entry(article_id, cached)
+    try:
+        _wyborcza_remote_add(article_id, schowek_url)
+    except Exception as e:
+        from source_base import enqueue_remote_op
+        enqueue_remote_op("wyborcza", "restore", article_id)
+        print(f"[wyborcza] add_to_schowek queued for retry: {e}")
     return True
 
 
@@ -282,6 +298,7 @@ def add_to_schowek(article_id: str, schowek_url: str, _cookie_file: str = "") ->
 class WyborczaSource(Source):
     prefix = "wyborcza"
     is_article = True
+    sync_interval_seconds = 600
 
     def __init__(self, schowek_url: str):
         self._schowek_url = schowek_url
@@ -292,11 +309,14 @@ class WyborczaSource(Source):
     def get_body(self, entry_id: str) -> str:
         return get_article_body(entry_id)
 
+    def _remote_consume(self, entry_id: str) -> None:
+        _wyborcza_remote_delete(entry_id, self._schowek_url)
+
+    def _remote_restore(self, entry_id: str) -> None:
+        _wyborcza_remote_add(entry_id, self._schowek_url)
+
     def mark_consumed(self, entry_id: str) -> bool:
         return remove_from_schowek(entry_id, self._schowek_url)
-
-    def _external_consume(self, entry_id: str) -> None:
-        remove_from_schowek(entry_id, self._schowek_url)
 
     def mark_restored(self, entry_id: str) -> bool:
         return add_to_schowek(entry_id, self._schowek_url)

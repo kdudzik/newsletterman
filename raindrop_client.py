@@ -263,49 +263,64 @@ def _find_or_create_archive(token: str) -> int | None:
     return create.json().get("item", {}).get("_id")
 
 
-def move_to_archive(article_id: str, token: str) -> bool:
-    """Move a Raindrop bookmark to the Archive collection and mark local cache as read."""
+def _raindrop_remote_archive(article_id: str, token: str) -> None:
     cached = _load_entry(article_id)
     raindrop_id = cached.get("raindrop_id")
     if not raindrop_id:
-        return False
-    try:
-        archive_id = _find_or_create_archive(token)
-        if archive_id is None:
-            return False
-        requests.put(
-            f"{_API_BASE}/raindrop/{raindrop_id}",
-            headers=_headers(token),
-            json={"collection": {"$id": archive_id}},
-            timeout=10,
-        ).raise_for_status()
-    except Exception as e:
-        print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [raindrop] move_to_archive error: {e}")
+        return
+    archive_id = _find_or_create_archive(token)
+    if archive_id is None:
+        raise RuntimeError("could not find/create Raindrop archive collection")
+    requests.put(
+        f"{_API_BASE}/raindrop/{raindrop_id}",
+        headers=_headers(token),
+        json={"collection": {"$id": archive_id}},
+        timeout=10,
+    ).raise_for_status()
+
+
+def _raindrop_remote_unarchive(article_id: str, token: str) -> None:
+    cached = _load_entry(article_id)
+    raindrop_id = cached.get("raindrop_id")
+    if not raindrop_id:
+        return
+    requests.put(
+        f"{_API_BASE}/raindrop/{raindrop_id}",
+        headers=_headers(token),
+        json={"collection": {"$id": _UNSORTED_ID}},
+        timeout=10,
+    ).raise_for_status()
+
+
+def move_to_archive(article_id: str, token: str) -> bool:
+    cached = _load_entry(article_id)
+    if not cached.get("raindrop_id"):
         return False
     cached.pop("read", None)
     cached["status"] = "consumed"
     _save_entry(article_id, cached)
+    try:
+        _raindrop_remote_archive(article_id, token)
+    except Exception as e:
+        from source_base import enqueue_remote_op
+        enqueue_remote_op("raindrop", "consume", article_id)
+        print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [raindrop] move_to_archive queued for retry: {e}")
     return True
 
 
 def mark_unread(article_id: str, token: str) -> bool:
-    """Move bookmark back to Unsorted and clear local read flag."""
     cached = _load_entry(article_id)
-    raindrop_id = cached.get("raindrop_id")
-    if not raindrop_id:
+    if not cached.get("raindrop_id"):
         return False
-    try:
-        requests.put(
-            f"{_API_BASE}/raindrop/{raindrop_id}",
-            headers=_headers(token),
-            json={"collection": {"$id": _UNSORTED_ID}},
-            timeout=10,
-        ).raise_for_status()
-    except Exception as e:
-        print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [raindrop] mark_unread error: {e}")
     cached.pop("read", None)
     cached.pop("status", None)
     _save_entry(article_id, cached)
+    try:
+        _raindrop_remote_unarchive(article_id, token)
+    except Exception as e:
+        from source_base import enqueue_remote_op
+        enqueue_remote_op("raindrop", "restore", article_id)
+        print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] [raindrop] mark_unread queued for retry: {e}")
     return True
 
 
@@ -315,6 +330,7 @@ def mark_unread(article_id: str, token: str) -> bool:
 class RaindropSource(Source):
     prefix = "raindrop"
     is_article = True
+    sync_interval_seconds = 600
 
     def __init__(self, token: str):
         self._token = token
@@ -325,11 +341,14 @@ class RaindropSource(Source):
     def get_body(self, entry_id: str) -> str:
         return get_article_body(entry_id)
 
+    def _remote_consume(self, entry_id: str) -> None:
+        _raindrop_remote_archive(entry_id, self._token)
+
+    def _remote_restore(self, entry_id: str) -> None:
+        _raindrop_remote_unarchive(entry_id, self._token)
+
     def mark_consumed(self, entry_id: str) -> bool:
         return move_to_archive(entry_id, self._token)
-
-    def _external_consume(self, entry_id: str) -> None:
-        move_to_archive(entry_id, self._token)
 
     def mark_restored(self, entry_id: str) -> bool:
         return mark_unread(entry_id, self._token)
