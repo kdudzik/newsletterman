@@ -332,8 +332,14 @@ def _bg_sync_loop() -> None:
             _sync_all_sources()
         except Exception as e:
             _log(f"[bg sync] {e}")
-        _ensure_summaries_sync()
-        _ensure_scores_sync()
+        try:
+            _ensure_summaries_sync()
+        except Exception as e:
+            _log(f"[bg sync summaries] {e}")
+        try:
+            _ensure_scores_sync()
+        except Exception as e:
+            _log(f"[bg sync scores] {e}")
 
 
 def _startup_warmup_sync() -> None:
