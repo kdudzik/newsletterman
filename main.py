@@ -319,6 +319,7 @@ def _sync_all_sources(label: str = "") -> list[int]:
             except Exception as drain_e:
                 _log(f"[{source.prefix}] drain_pending_ops error: {drain_e}")
         except Exception as e:
+            source._last_synced_at = time.monotonic()
             source.set_error(str(e))
             suffix = f" {label}" if label else ""
             _log(f"[{source.prefix}]{suffix} sync failed: {e}")
@@ -836,7 +837,7 @@ async def rescore():
     import json as _json
 
     def _clear_and_rescore():
-        cache_dir = Path(__file__).parent / ".newsletter_cache"
+        cache_dir = Path(__file__).parent / ".cache"
         if not cache_dir.exists():
             return
         for f in cache_dir.glob("*.json"):
@@ -845,7 +846,7 @@ async def rescore():
             except Exception:
                 continue
             if entry.get("summary"):
-                for k in ("relevance_score", "relevance_note", "challenge_score", "challenge_note", "lean", "lean_note"):
+                for k in ("relevance_score", "relevance_note", "challenge_score", "challenge_note", "lean", "lean_note", "trust_score", "trust_note"):
                     entry.pop(k, None)
                 f.write_text(_json.dumps(entry, ensure_ascii=False, indent=2))
         _ensure_scores_sync()

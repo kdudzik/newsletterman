@@ -60,7 +60,11 @@ interests, and life areas? 10 = directly serves their priorities; 0 = completely
 2. CHALLENGE (0–10): How much does this content tension, expand, or push back on their \
 existing worldview? Consider: does it introduce perspectives they haven't considered, \
 challenge assumptions implicit in their values, or cover topics outside their usual frame? \
-10 = strongly challenges or expands; 0 = fully confirms what they already believe.
+10 = strongly challenges or expands; 0 = fully confirms what they already believe. \
+Pay special attention to the "Worldview Tensions & Blind Spots" section of the reader's \
+context — these are the specific assumptions most worth questioning. Content that directly \
+addresses one of those tensions should score higher than content that merely covers an \
+unfamiliar topic.
 
 Write both notes in the SAME LANGUAGE as the item summary. Address the reader \
 directly in second person (e.g. "You" in English, "Ty"/"Twoje" in Polish).

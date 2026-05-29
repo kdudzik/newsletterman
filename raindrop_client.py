@@ -158,7 +158,18 @@ def sync_articles(token: str) -> list[dict]:
         timeout=15,
     )
     resp.raise_for_status()
-    items = resp.json().get("items", [])
+    now = datetime.now(timezone.utc).timestamp()
+
+    def _created_ts(item: dict) -> float:
+        try:
+            return datetime.fromisoformat(item["created"].replace("Z", "+00:00")).timestamp()
+        except Exception:
+            return 0.0
+
+    items = [
+        item for item in resp.json().get("items", [])
+        if now - _created_ts(item) > 60
+    ]
     current_ids = {f"raindrop-{item['_id']}" for item in items}
 
     _sync_status_flags("raindrop", current_ids)
